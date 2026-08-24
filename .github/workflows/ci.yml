@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CI_SEED: bk6N03RyzsSo4jj2Eg/X2yirn/FNbJuc+Q2hW37kdTQ=
 
 jobs:
   test:
@@ -27,3 +28,9 @@ jobs:
 
       - name: Tests
         run: cargo test
+
+      - name: Attack suite against live server
+        run: |
+          MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
+          sleep 5
+          MANDATEPAY_SEED=$CI_SEED cargo run --bin eval
