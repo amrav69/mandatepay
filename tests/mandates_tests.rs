@@ -3,6 +3,8 @@ use mandatepay::policy::{self, Decision};
 use mandatepay::store::Db;
 use tempfile::TempDir;
 
+const CAP: u64 = 49_900;
+
 fn sample_mandate(nonce: &str) -> Mandate {
     let now = unix_now();
     Mandate {
@@ -12,7 +14,7 @@ fn sample_mandate(nonce: &str) -> Mandate {
         merchant_id: "merchant-001".into(),
         action: "create_order".into(),
         currency: "INR".into(),
-        max_amount_minor: 49_900,
+        max_amount_minor: CAP,
         issued_at: now - 10,
         expires_at: now + 3_600,
         nonce: nonce.into(),
@@ -59,8 +61,35 @@ fn valid_mandate_allowed_by_policy() {
     let m = sample_mandate("n_happy");
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &db),
         Decision::Allow { .. }
+    ));
+}
+
+#[test]
+fn over_cap_amount_rejected_by_policy() {
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let m = sample_mandate("n_overcap");
+    let sig = auth.sign(&m).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m, &sig, CAP * 10, &db),
+            Decision::Reject { reason } if reason.contains("exceeds mandate cap")
+        ),
+        "spending beyond the signed cap must be rejected"
+    );
+}
+
+#[test]
+fn zero_amount_rejected_by_policy() {
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let m = sample_mandate("n_zero");
+    let sig = auth.sign(&m).unwrap();
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, 0, &db),
+        Decision::Reject { .. }
     ));
 }
 
@@ -73,7 +102,7 @@ fn expired_mandate_rejected_by_policy() {
     m.expires_at = unix_now() - 3_600;
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &db),
         Decision::Reject { .. }
     ));
 }
@@ -85,12 +114,12 @@ fn replayed_nonce_rejected_second_time() {
     let m = sample_mandate("n_replay");
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &db),
         Decision::Allow { .. }
     ));
     assert!(
         matches!(
-            policy::evaluate(&auth, &m, &sig, &db),
+            policy::evaluate(&auth, &m, &sig, CAP, &db),
             Decision::Reject { reason } if reason.contains("replay")
         ),
         "second evaluation must be rejected as replay"

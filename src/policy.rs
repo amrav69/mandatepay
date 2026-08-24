@@ -16,6 +16,7 @@ pub fn evaluate(
     authority: &Authority,
     mandate: &Mandate,
     signature_b64: &str,
+    amount_minor: u64,
     db: &Db,
 ) -> Decision {
     if mandate.version != 1 {
@@ -39,6 +40,15 @@ pub fn evaluate(
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
     }
+    if amount_minor == 0 {
+        return reject("amount_minor must be positive");
+    }
+    if amount_minor > mandate.max_amount_minor {
+        return reject(format!(
+            "amount {amount_minor} exceeds mandate cap {}",
+            mandate.max_amount_minor
+        ));
+    }
 
     if let Err(e) = authority.verify(mandate, signature_b64) {
         return reject(match e {
@@ -59,6 +69,6 @@ pub fn evaluate(
     }
 
     Decision::Allow {
-        reason: "signature, scope, expiry and replay checks passed".into(),
+        reason: "signature, scope, amount, expiry and replay checks passed".into(),
     }
 }

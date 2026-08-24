@@ -7,7 +7,7 @@ use axum::{
 };
 use mandatepay::{
     error::AppError,
-    gateway,
+    gateway::Gateway,
     mandates::{self, Authority, Mandate},
     policy::{self, Decision},
     store::Db,
@@ -20,6 +20,7 @@ type SharedState = Arc<AppState>;
 struct AppState {
     authority: Authority,
     db: Db,
+    gateway: Gateway,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +42,7 @@ struct Issued {
 struct CheckoutRequest {
     mandate: Mandate,
     signature: String,
+    amount_minor: u64,
 }
 
 #[derive(Serialize)]
@@ -48,6 +50,7 @@ struct DecisionResponse {
     decision: String,
     reason: String,
     order_id: Option<String>,
+    gateway: String,
 }
 
 async fn issue(
@@ -115,7 +118,13 @@ async fn checkout(
     State(state): State<SharedState>,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<Json<DecisionResponse>, AppError> {
-    let decision = policy::evaluate(&state.authority, &req.mandate, &req.signature, &state.db);
+    let decision = policy::evaluate(
+        &state.authority,
+        &req.mandate,
+        &req.signature,
+        req.amount_minor,
+        &state.db,
+    );
 
     let (label, mut reason) = match &decision {
         Decision::Allow { reason } => ("ALLOW", reason.clone()),
@@ -124,8 +133,12 @@ async fn checkout(
 
     let mut order_id = None;
     if matches!(decision, Decision::Allow { .. }) {
-        match gateway::create_test_order(&req.mandate).await {
-            Ok(id) => order_id = Some(id),
+        match state
+            .gateway
+            .create_order(&req.mandate, req.amount_minor)
+            .await
+        {
+            Ok(order) => order_id = Some(order.id),
             Err(e) => reason = format!("{reason}; gateway: {e}"),
         }
     }
@@ -144,6 +157,7 @@ async fn checkout(
         decision: label.into(),
         reason,
         order_id,
+        gateway: state.gateway.label().into(),
     }))
 }
 
@@ -158,8 +172,13 @@ async fn main() {
     let authority = Authority::from_seed(mandates::load_seed());
     eprintln!("authority public key: {}", authority.public_key_b64());
 
+    let gateway = Gateway::from_env();
     let db = Db::open("mandatepay.db").expect("failed to open sqlite ledger");
-    let state = Arc::new(AppState { authority, db });
+    let state = Arc::new(AppState {
+        authority,
+        db,
+        gateway,
+    });
 
     let app = Router::new()
         .route("/health", get(health))
