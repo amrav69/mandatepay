@@ -5,6 +5,10 @@ use tempfile::TempDir;
 
 const CAP: u64 = 49_900;
 
+fn allowlist() -> Vec<String> {
+    vec!["merchant-001".to_string()]
+}
+
 fn sample_mandate(nonce: &str) -> Mandate {
     let now = unix_now();
     Mandate {
@@ -58,10 +62,11 @@ fn foreign_authority_rejected() {
 fn valid_mandate_allowed_by_policy() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
+    let allow = allowlist();
     let m = sample_mandate("n_happy");
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, CAP, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
         Decision::Allow { .. }
     ));
 }
@@ -70,11 +75,12 @@ fn valid_mandate_allowed_by_policy() {
 fn over_cap_amount_rejected_by_policy() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
+    let allow = allowlist();
     let m = sample_mandate("n_overcap");
     let sig = auth.sign(&m).unwrap();
     assert!(
         matches!(
-            policy::evaluate(&auth, &m, &sig, CAP * 10, &db),
+            policy::evaluate(&auth, &m, &sig, CAP * 10, &allow, &db),
             Decision::Reject { reason } if reason.contains("exceeds mandate cap")
         ),
         "spending beyond the signed cap must be rejected"
@@ -85,24 +91,43 @@ fn over_cap_amount_rejected_by_policy() {
 fn zero_amount_rejected_by_policy() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
+    let allow = allowlist();
     let m = sample_mandate("n_zero");
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, 0, &db),
+        policy::evaluate(&auth, &m, &sig, 0, &allow, &db),
         Decision::Reject { .. }
     ));
+}
+
+#[test]
+fn non_allowlisted_merchant_rejected_by_policy() {
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let mut m = sample_mandate("n_merchant");
+    m.merchant_id = "merchant-999".into();
+    let sig = auth.sign(&m).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+            Decision::Reject { reason } if reason.contains("not allowlisted")
+        ),
+        "mandates for unknown merchants must be rejected"
+    );
 }
 
 #[test]
 fn expired_mandate_rejected_by_policy() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
+    let allow = allowlist();
     let mut m = sample_mandate("n_expired");
     m.issued_at = unix_now() - 7_200;
     m.expires_at = unix_now() - 3_600;
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, CAP, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
         Decision::Reject { .. }
     ));
 }
@@ -111,15 +136,16 @@ fn expired_mandate_rejected_by_policy() {
 fn replayed_nonce_rejected_second_time() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
+    let allow = allowlist();
     let m = sample_mandate("n_replay");
     let sig = auth.sign(&m).unwrap();
     assert!(matches!(
-        policy::evaluate(&auth, &m, &sig, CAP, &db),
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
         Decision::Allow { .. }
     ));
     assert!(
         matches!(
-            policy::evaluate(&auth, &m, &sig, CAP, &db),
+            policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
             Decision::Reject { reason } if reason.contains("replay")
         ),
         "second evaluation must be rejected as replay"

@@ -21,6 +21,7 @@ struct AppState {
     authority: Authority,
     db: Db,
     gateway: Gateway,
+    allowed_merchants: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +52,15 @@ struct DecisionResponse {
     reason: String,
     order_id: Option<String>,
     gateway: String,
+}
+
+fn parse_allowlist() -> Vec<String> {
+    std::env::var("ALLOWED_MERCHANTS")
+        .unwrap_or_else(|_| "merchant-001".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 async fn issue(
@@ -123,6 +133,7 @@ async fn checkout(
         &req.mandate,
         &req.signature,
         req.amount_minor,
+        &state.allowed_merchants,
         &state.db,
     );
 
@@ -178,6 +189,7 @@ async fn main() {
         authority,
         db,
         gateway,
+        allowed_merchants: parse_allowlist(),
     });
 
     let app = Router::new()

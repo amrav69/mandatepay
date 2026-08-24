@@ -17,6 +17,7 @@ pub fn evaluate(
     mandate: &Mandate,
     signature_b64: &str,
     amount_minor: u64,
+    allowed_merchants: &[String],
     db: &Db,
 ) -> Decision {
     if mandate.version != 1 {
@@ -39,6 +40,12 @@ pub fn evaluate(
     }
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
+    }
+    if !allowed_merchants.iter().any(|m| m == &mandate.merchant_id) {
+        return reject(format!(
+            "merchant '{}' is not allowlisted",
+            mandate.merchant_id
+        ));
     }
     if amount_minor == 0 {
         return reject("amount_minor must be positive");
@@ -69,6 +76,6 @@ pub fn evaluate(
     }
 
     Decision::Allow {
-        reason: "signature, scope, amount, expiry and replay checks passed".into(),
+        reason: "signature, scope, merchant, amount, expiry and replay checks passed".into(),
     }
 }
