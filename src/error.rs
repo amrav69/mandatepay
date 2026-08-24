@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,4 +20,3 @@ impl IntoResponse for AppError {
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }
 }
-

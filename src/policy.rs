@@ -1,4 +1,4 @@
-use crate::mandates::{unix_now, Authority, Mandate, VerifyError};
+use crate::mandates::{Authority, Mandate, VerifyError, unix_now};
 use crate::store::Db;
 
 pub enum Decision {
@@ -7,7 +7,9 @@ pub enum Decision {
 }
 
 fn reject(reason: impl Into<String>) -> Decision {
-    Decision::Reject { reason: reason.into() }
+    Decision::Reject {
+        reason: reason.into(),
+    }
 }
 
 pub fn evaluate(

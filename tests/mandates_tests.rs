@@ -1,4 +1,4 @@
-use mandatepay::mandates::{unix_now, Authority, Mandate};
+use mandatepay::mandates::{Authority, Mandate, unix_now};
 use mandatepay::policy::{self, Decision};
 use mandatepay::store::Db;
 use tempfile::TempDir;

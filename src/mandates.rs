@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,14 +81,13 @@ impl Authority {
 }
 
 pub fn load_seed() -> [u8; 32] {
-    if let Ok(s) = std::env::var("MANDATEPAY_SEED") {
-        if let Ok(raw) = B64.decode(s.trim()) {
-            if raw.len() == 32 {
-                let mut seed = [0u8; 32];
-                seed.copy_from_slice(&raw);
-                return seed;
-            }
-        }
+    if let Ok(s) = std::env::var("MANDATEPAY_SEED")
+        && let Ok(raw) = B64.decode(s.trim())
+        && raw.len() == 32
+    {
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&raw);
+        return seed;
     }
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).expect("os randomness unavailable");

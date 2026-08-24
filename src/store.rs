@@ -1,5 +1,5 @@
 use crate::mandates::unix_now;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::sync::Mutex;
 
 pub struct Db(Mutex<Connection>);
