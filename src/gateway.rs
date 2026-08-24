@@ -28,9 +28,9 @@ pub enum Gateway {
 
 impl Gateway {
     pub fn from_env() -> Self {
-        let has_keys = std::env::var("RAZORPAY_KEY_ID").is_ok()
-            && std::env::var("RAZORPAY_KEY_SECRET").is_ok();
-        if has_keys {
+        let key_id = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
+        let key_secret = std::env::var("RAZORPAY_KEY_SECRET").unwrap_or_default();
+        if !key_id.trim().is_empty() && !key_secret.trim().is_empty() {
             eprintln!(
                 "gateway: RAZORPAY keys present but live client arrives with the real swap; using mock"
             );
