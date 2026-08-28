@@ -35,3 +35,5 @@ jobs:
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
           sleep 5
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin eval
+          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin chaos
+          curl -s http://127.0.0.1:8080/v1/chain/verify | grep -q '"chain_valid":true'
