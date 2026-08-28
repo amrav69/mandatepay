@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     response::{Html, IntoResponse},
     routing::{get, post},
 };
@@ -23,7 +24,6 @@ struct AppState {
     authority: Authority,
     db: Db,
     gateway: Gateway,
-    allowed_merchants: Vec<String>,
     api_key: String,
     max_mandate_cap: u64,
 }
@@ -277,6 +277,70 @@ async fn ledger_stats(
     Ok(Json(json!(stats)))
 }
 
+async fn get_decision(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let row = state
+        .db
+        .get_decision(id)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    match row {
+        Some(r) => Ok(Json(json!(r))),
+        None => Err(AppError::BadRequest(format!("decision {id} not found"))),
+    }
+}
+
+async fn verify_decision(
+    State(state): State<SharedState>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let row = state
+        .db
+        .get_decision(id)
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .ok_or_else(|| AppError::BadRequest(format!("decision {id} not found")))?;
+    let chain_ok = state
+        .db
+        .verify_chain()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({
+        "id": row.id,
+        "audit_hash": row.audit_hash,
+        "prev_hash": row.prev_hash,
+        "chain_valid": chain_ok,
+        "decision": row.decision,
+    })))
+}
+
+#[derive(Deserialize)]
+struct VerifyRequest {
+    mandate: Mandate,
+    signature: String,
+}
+
+async fn verify_mandate(
+    State(state): State<SharedState>,
+    Json(req): Json<VerifyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match state.authority.verify(&req.mandate, &req.signature) {
+        Ok(()) => Ok(Json(
+            json!({"valid": true, "reason": "signature verifies against mandate authority"}),
+        )),
+        Err(e) => Ok(Json(json!({"valid": false, "reason": e.to_string()}))),
+    }
+}
+
+async fn chain_verify(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let ok = state
+        .db
+        .verify_chain()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({"chain_valid": ok})))
+}
+
 async fn dashboard() -> impl IntoResponse {
     let html = include_str!("../dashboard/index.html");
     Html(html)
@@ -302,7 +366,6 @@ async fn main() {
         authority,
         db,
         gateway,
-        allowed_merchants: parse_allowlist(),
         api_key: api_key.clone(),
         max_mandate_cap,
     });
@@ -319,7 +382,10 @@ async fn main() {
         .route("/", get(dashboard))
         .route("/health", get(health))
         .route("/v1/decisions", get(list_decisions))
-        .route("/v1/stats", get(ledger_stats))
+        .route("/v1/decisions/{id}", get(get_decision))
+        .route("/v1/decisions/{id}/verify", get(verify_decision))
+        .route("/v1/verify", post(verify_mandate))
+        .route("/v1/chain/verify", get(chain_verify))
         .merge(protected)
         .with_state(state);
 

@@ -1,6 +1,7 @@
 use crate::mandates::unix_now;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize)]
@@ -11,6 +12,8 @@ pub struct DecisionRow {
     pub decision: String,
     pub reason: String,
     pub payload: String,
+    pub audit_hash: String,
+    pub prev_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,7 +42,9 @@ CREATE TABLE IF NOT EXISTS decisions (
     endpoint TEXT NOT NULL,
     decision TEXT NOT NULL,
     reason TEXT NOT NULL,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    audit_hash TEXT NOT NULL DEFAULT '',
+    prev_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS nonces (
     nonce TEXT PRIMARY KEY,
@@ -83,10 +88,33 @@ impl Db {
         payload: &str,
     ) -> rusqlite::Result<()> {
         let conn = self.0.lock().expect("decision ledger poisoned");
+        let ts = unix_now() as i64;
+        let prev_hash: String = conn
+            .query_row(
+                "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(prev_hash.as_bytes());
+        hasher.update(b"|");
+        hasher.update(endpoint.as_bytes());
+        hasher.update(b"|");
+        hasher.update(decision.as_bytes());
+        hasher.update(b"|");
+        hasher.update(reason.as_bytes());
+        hasher.update(b"|");
+        hasher.update(payload.as_bytes());
+        hasher.update(b"|");
+        hasher.update(ts.to_be_bytes());
+        let audit_hash = hex::encode(hasher.finalize());
         conn.execute(
-            "INSERT INTO decisions (ts, endpoint, decision, reason, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![unix_now() as i64, endpoint, decision, reason, payload],
+            "INSERT INTO decisions (ts, endpoint, decision, reason, payload, audit_hash, prev_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                ts, endpoint, decision, reason, payload, audit_hash, prev_hash
+            ],
         )?;
         Ok(())
     }
@@ -103,7 +131,7 @@ impl Db {
     pub fn list_recent(&self, limit: i64) -> rusqlite::Result<Vec<DecisionRow>> {
         let conn = self.0.lock().expect("decision ledger poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, ts, endpoint, decision, reason, payload FROM decisions ORDER BY id DESC LIMIT ?1",
+            "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt
             .query_map(params![limit], |row| {
@@ -114,10 +142,78 @@ impl Db {
                     decision: row.get(3)?,
                     reason: row.get(4)?,
                     payload: row.get(5)?,
+                    audit_hash: row.get(6)?,
+                    prev_hash: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    pub fn get_decision(&self, id: i64) -> rusqlite::Result<Option<DecisionRow>> {
+        let conn = self.0.lock().expect("decision ledger poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(DecisionRow {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                endpoint: row.get(2)?,
+                decision: row.get(3)?,
+                reason: row.get(4)?,
+                payload: row.get(5)?,
+                audit_hash: row.get(6)?,
+                prev_hash: row.get(7)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn verify_chain(&self) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().expect("decision ledger poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DecisionRow {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                endpoint: row.get(2)?,
+                decision: row.get(3)?,
+                reason: row.get(4)?,
+                payload: row.get(5)?,
+                audit_hash: row.get(6)?,
+                prev_hash: row.get(7)?,
+            })
+        })?;
+        let mut expected_prev = String::new();
+        for row in rows {
+            let r = row?;
+            if r.prev_hash != expected_prev {
+                return Ok(false);
+            }
+            let mut hasher = Sha256::new();
+            hasher.update(r.prev_hash.as_bytes());
+            hasher.update(b"|");
+            hasher.update(r.endpoint.as_bytes());
+            hasher.update(b"|");
+            hasher.update(r.decision.as_bytes());
+            hasher.update(b"|");
+            hasher.update(r.reason.as_bytes());
+            hasher.update(b"|");
+            hasher.update(r.payload.as_bytes());
+            hasher.update(b"|");
+            hasher.update(r.ts.to_be_bytes());
+            let calc = hex::encode(hasher.finalize());
+            if calc != r.audit_hash {
+                return Ok(false);
+            }
+            expected_prev = r.audit_hash;
+        }
+        Ok(true)
     }
 
     pub fn stats(&self) -> rusqlite::Result<LedgerStats> {
