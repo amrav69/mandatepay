@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use rusqlite;
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
@@ -11,6 +12,12 @@ pub enum AppError {
     Unauthorized(String),
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(e: rusqlite::Error) -> Self {
+        AppError::Internal(e.to_string())
+    }
 }
 
 impl IntoResponse for AppError {

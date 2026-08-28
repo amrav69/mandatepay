@@ -157,12 +157,46 @@ async fn checkout(
     State(state): State<SharedState>,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<Json<DecisionResponse>, AppError> {
+    let agent_id = req.mandate.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
+
+    if !state.db.check_velocity(agent_id)? {
+        let reason = format!("velocity limit exceeded for agent {}", agent_id);
+        state.db.record_decision(
+            "/v1/checkout",
+            "REJECT",
+            &reason,
+            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+        )?;
+        return Ok(Json(DecisionResponse {
+            decision: "REJECT".into(),
+            reason,
+            order_id: None,
+            gateway: state.gateway.label().into(),
+        }));
+    }
+
+    let agent_policy = state.db.get_agent_policy(agent_id)?.unwrap_or_else(|| {
+        let allow = parse_allowlist();
+        mandatepay::store::AgentPolicy {
+            agent_id: agent_id.to_string(),
+            max_cap: state.max_mandate_cap,
+            velocity_limit: 50,
+            velocity_window_secs: 60,
+            allowed_merchants: allow,
+        }
+    });
+
+    let allowed_merchants = agent_policy.allowed_merchants.clone();
+
     let decision = policy::evaluate(
         &state.authority,
         &req.mandate,
         &req.signature,
         req.amount_minor,
-        &state.allowed_merchants,
+        &allowed_merchants,
         &state.db,
     );
 

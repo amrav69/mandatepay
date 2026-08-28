@@ -1,6 +1,6 @@
 use crate::mandates::unix_now;
 use rusqlite::{Connection, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +19,15 @@ pub struct LedgerStats {
     pub allow: i64,
     pub reject: i64,
     pub issued: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPolicy {
+    pub agent_id: String,
+    pub max_cap: u64,
+    pub velocity_limit: u32,
+    pub velocity_window_secs: u64,
+    pub allowed_merchants: Vec<String>,
 }
 
 pub struct Db(Mutex<Connection>);
@@ -41,6 +50,21 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
     created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id TEXT PRIMARY KEY,
+    max_cap INTEGER NOT NULL DEFAULT 50000,
+    velocity_limit INTEGER NOT NULL DEFAULT 50,
+    velocity_window_secs INTEGER NOT NULL DEFAULT 60,
+    allowed_merchants TEXT NOT NULL DEFAULT 'merchant-001',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_velocity (
+    agent_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (agent_id, window_start)
 );
 ";
 
@@ -145,5 +169,92 @@ impl Db {
             params![mandate_id, order_id, amount as i64, unix_now() as i64],
         )?;
         Ok(())
+    }
+
+    pub fn get_or_create_agent(&self, agent_id: &str) -> rusqlite::Result<AgentPolicy> {
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1"
+        )?;
+        let mut rows = stmt.query(params![agent_id])?;
+        if let Some(row) = rows.next()? {
+            let merchants: String = row.get(4)?;
+            Ok(AgentPolicy {
+                agent_id: row.get(0)?,
+                max_cap: row.get::<_, i64>(1)? as u64,
+                velocity_limit: row.get::<_, i64>(2)? as u32,
+                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                allowed_merchants: merchants
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            })
+        } else {
+            let now = unix_now();
+            conn.execute(
+                "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
+                 VALUES (?1, 50000, 50, 60, 'merchant-001', ?2, ?2)",
+                params![agent_id, now as i64],
+            )?;
+            Ok(AgentPolicy {
+                agent_id: agent_id.to_string(),
+                max_cap: 50000,
+                velocity_limit: 50,
+                velocity_window_secs: 60,
+                allowed_merchants: vec!["merchant-001".to_string()],
+            })
+        }
+    }
+
+    pub fn check_velocity(&self, agent_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().expect("velocity poisoned");
+        let now = unix_now();
+        conn.execute(
+            "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
+             VALUES (?1, 50000, 50, 60, 'merchant-001', ?2, ?2)",
+            params![agent_id, now as i64],
+        )?;
+        let (velocity_limit, velocity_window_secs): (i64, i64) = conn.query_row(
+            "SELECT velocity_limit, velocity_window_secs FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let window_start = now - (now % velocity_window_secs as u64);
+        conn.execute(
+            "INSERT INTO agent_velocity (agent_id, window_start, count) VALUES (?1, ?2, 1)
+             ON CONFLICT(agent_id, window_start) DO UPDATE SET count = count + 1",
+            params![agent_id, window_start as i64],
+        )?;
+        let count: i64 = conn.query_row(
+            "SELECT count FROM agent_velocity WHERE agent_id = ?1 AND window_start = ?2",
+            params![agent_id, window_start as i64],
+            |r| r.get(0),
+        )?;
+        Ok(count <= velocity_limit)
+    }
+
+    pub fn get_agent_policy(&self, agent_id: &str) -> rusqlite::Result<Option<AgentPolicy>> {
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1"
+        )?;
+        let mut rows = stmt.query(params![agent_id])?;
+        if let Some(row) = rows.next()? {
+            let merchants: String = row.get(4)?;
+            Ok(Some(AgentPolicy {
+                agent_id: row.get(0)?,
+                max_cap: row.get::<_, i64>(1)? as u64,
+                velocity_limit: row.get::<_, i64>(2)? as u32,
+                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                allowed_merchants: merchants
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
