@@ -2,7 +2,8 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
+    response::{Html, IntoResponse},
     routing::{get, post},
 };
 use mandatepay::{
@@ -176,6 +177,38 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
 }
 
+#[derive(Deserialize)]
+struct ListParams {
+    limit: Option<i64>,
+}
+
+async fn list_decisions(
+    State(state): State<SharedState>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let rows = state
+        .db
+        .list_recent(limit)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "decisions": rows })))
+}
+
+async fn ledger_stats(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let stats = state
+        .db
+        .stats()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!(stats)))
+}
+
+async fn dashboard() -> impl IntoResponse {
+    let html = include_str!("../dashboard/index.html");
+    Html(html)
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -193,9 +226,12 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/", get(dashboard))
         .route("/health", get(health))
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
+        .route("/v1/decisions", get(list_decisions))
+        .route("/v1/stats", get(ledger_stats))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));

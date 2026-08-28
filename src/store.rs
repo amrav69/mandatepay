@@ -1,6 +1,25 @@
 use crate::mandates::unix_now;
 use rusqlite::{Connection, params};
+use serde::Serialize;
 use std::sync::Mutex;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionRow {
+    pub id: i64,
+    pub ts: i64,
+    pub endpoint: String,
+    pub decision: String,
+    pub reason: String,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LedgerStats {
+    pub total: i64,
+    pub allow: i64,
+    pub reject: i64,
+    pub issued: i64,
+}
 
 pub struct Db(Mutex<Connection>);
 
@@ -49,5 +68,51 @@ impl Db {
             params![nonce, unix_now() as i64],
         )?;
         Ok(changed > 0)
+    }
+
+    pub fn list_recent(&self, limit: i64) -> rusqlite::Result<Vec<DecisionRow>> {
+        let conn = self.0.lock().expect("decision ledger poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, endpoint, decision, reason, payload FROM decisions ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(DecisionRow {
+                    id: row.get(0)?,
+                    ts: row.get(1)?,
+                    endpoint: row.get(2)?,
+                    decision: row.get(3)?,
+                    reason: row.get(4)?,
+                    payload: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn stats(&self) -> rusqlite::Result<LedgerStats> {
+        let conn = self.0.lock().expect("decision ledger poisoned");
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0))?;
+        let allow: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM decisions WHERE decision='ALLOW'",
+            [],
+            |r| r.get(0),
+        )?;
+        let reject: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM decisions WHERE decision='REJECT'",
+            [],
+            |r| r.get(0),
+        )?;
+        let issued: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM decisions WHERE decision='ISSUED'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(LedgerStats {
+            total,
+            allow,
+            reject,
+            issued,
+        })
     }
 }
