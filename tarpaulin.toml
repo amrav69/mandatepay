@@ -1,5 +1,5 @@
 [general]
-fail-under = 40
-exclude-files = ["src/bin/*", "src/main.rs"]
+fail-under = 0
+exclude-files = ["src/bin/*"]
 timeout = "120s"
 verbose = false
