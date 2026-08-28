@@ -45,3 +45,56 @@ pub fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn verify_rejects_empty() {
+        assert!(!verify_api_key("", "abc"));
+        assert!(!verify_api_key("abc", ""));
+        assert!(!verify_api_key("", ""));
+    }
+
+    #[test]
+    fn verify_matches_exact_and_rejects_mismatch() {
+        assert!(verify_api_key("secret123", "secret123"));
+        assert!(!verify_api_key("secret123", "secret124"));
+    }
+
+    #[test]
+    fn extract_from_x_api_key() {
+        let mut h = HeaderMap::new();
+        h.insert("x-api-key", HeaderValue::from_static("my-key"));
+        assert_eq!(extract_api_key(&h).as_deref(), Some("my-key"));
+    }
+
+    #[test]
+    fn extract_from_bearer() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token"),
+        );
+        assert_eq!(extract_api_key(&h).as_deref(), Some("my-token"));
+    }
+
+    #[test]
+    fn extract_prefers_x_api_key_over_bearer() {
+        let mut h = HeaderMap::new();
+        h.insert("x-api-key", HeaderValue::from_static("x-key"));
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer bearer-key"),
+        );
+        assert_eq!(extract_api_key(&h).as_deref(), Some("x-key"));
+    }
+
+    #[test]
+    fn extract_missing_returns_none() {
+        let h = HeaderMap::new();
+        assert!(extract_api_key(&h).is_none());
+    }
+}

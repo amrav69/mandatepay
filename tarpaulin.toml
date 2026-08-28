@@ -1,0 +1,5 @@
+[general]
+fail-under = 60
+exclude-files = ["src/bin/*"]
+timeout = "120s"
+verbose = false

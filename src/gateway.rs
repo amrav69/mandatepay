@@ -134,3 +134,82 @@ impl Gateway {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn label_mock() {
+        let g = Gateway::Mock;
+        assert_eq!(g.label(), "mock");
+    }
+
+    #[test]
+    fn from_env_mock_when_no_keys() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let orig_id = std::env::var("RAZORPAY_KEY_ID").ok();
+        let orig_secret = std::env::var("RAZORPAY_KEY_SECRET").ok();
+        unsafe {
+            std::env::remove_var("RAZORPAY_KEY_ID");
+            std::env::remove_var("RAZORPAY_KEY_SECRET");
+        }
+        let g = Gateway::from_env();
+        assert_eq!(g.label(), "mock");
+        unsafe {
+            if let Some(v) = orig_id {
+                std::env::set_var("RAZORPAY_KEY_ID", v);
+            }
+            if let Some(v) = orig_secret {
+                std::env::set_var("RAZORPAY_KEY_SECRET", v);
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_live_when_both_keys_present() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let orig_id = std::env::var("RAZORPAY_KEY_ID").ok();
+        let orig_secret = std::env::var("RAZORPAY_KEY_SECRET").ok();
+        unsafe {
+            std::env::set_var("RAZORPAY_KEY_ID", "rzp_test_dummy");
+            std::env::set_var("RAZORPAY_KEY_SECRET", "secret_dummy");
+        }
+        let g = Gateway::from_env();
+        assert_eq!(g.label(), "razorpay-test");
+        unsafe {
+            match orig_id {
+                Some(v) => std::env::set_var("RAZORPAY_KEY_ID", v),
+                None => std::env::remove_var("RAZORPAY_KEY_ID"),
+            }
+            match orig_secret {
+                Some(v) => std::env::set_var("RAZORPAY_KEY_SECRET", v),
+                None => std::env::remove_var("RAZORPAY_KEY_SECRET"),
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_mock_when_only_one_key() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let orig_id = std::env::var("RAZORPAY_KEY_ID").ok();
+        let orig_secret = std::env::var("RAZORPAY_KEY_SECRET").ok();
+        unsafe {
+            std::env::set_var("RAZORPAY_KEY_ID", "rzp_test_dummy");
+            std::env::remove_var("RAZORPAY_KEY_SECRET");
+        }
+        let g = Gateway::from_env();
+        assert_eq!(g.label(), "mock");
+        unsafe {
+            match orig_id {
+                Some(v) => std::env::set_var("RAZORPAY_KEY_ID", v),
+                None => std::env::remove_var("RAZORPAY_KEY_ID"),
+            }
+            match orig_secret {
+                Some(v) => std::env::set_var("RAZORPAY_KEY_SECRET", v),
+                None => std::env::remove_var("RAZORPAY_KEY_SECRET"),
+            }
+        }
+    }
+}
