@@ -52,14 +52,14 @@ impl Gateway {
             .trim()
             .to_string();
         if !key_id.is_empty() && !key_secret.is_empty() {
-            eprintln!("gateway: razorpay-test keys present -> live test-mode client enabled");
+            tracing::info!("gateway: razorpay-test keys present -> live test-mode client enabled");
             Gateway::Razorpay {
                 key_id,
                 key_secret,
                 http: reqwest::Client::new(),
             }
         } else {
-            eprintln!("gateway: no RAZORPAY keys in env -> mock gateway (no money moves)");
+            tracing::info!("gateway: no RAZORPAY keys in env -> mock gateway (no money moves)");
             Gateway::Mock
         }
     }

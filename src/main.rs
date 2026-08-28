@@ -348,19 +348,25 @@ async fn dashboard() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "mandatepay=info,tower_http=warn".into()),
+        )
+        .init();
     dotenvy::dotenv().ok();
 
     let authority = Authority::from_seed(mandates::load_seed());
-    eprintln!("authority public key: {}", authority.public_key_b64());
+    tracing::info!(authority_key = %authority.public_key_b64(), "authority public key");
 
     let gateway = Gateway::from_env();
     let db = Db::open("mandatepay.db").expect("failed to open sqlite ledger");
     let api_key = resolve_api_key();
     let max_mandate_cap = parse_max_cap();
-    eprintln!(
-        "mandate cap: {} paise (₹{:.2})",
-        max_mandate_cap,
-        max_mandate_cap as f64 / 100.0
+    tracing::info!(
+        mandate_cap = max_mandate_cap,
+        rupees = max_mandate_cap as f64 / 100.0,
+        "mandate cap"
     );
     let state = Arc::new(AppState {
         authority,
@@ -393,6 +399,6 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("port 8080 already in use");
-    eprintln!("listening on http://{addr}");
+    tracing::info!(%addr, "listening");
     axum::serve(listener, app).await.expect("server crashed");
 }

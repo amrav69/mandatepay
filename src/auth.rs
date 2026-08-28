@@ -10,8 +10,7 @@ pub fn resolve_api_key() -> String {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).expect("os randomness unavailable");
     let k = B64.encode(raw);
-    eprintln!("MANDATEPAY_API_KEY not set — generated ephemeral key: {k}");
-    eprintln!("Set MANDATEPAY_API_KEY in .env to keep the same key across restarts.");
+    tracing::warn!(ephemeral_key = %k, "MANDATEPAY_API_KEY not set — generated ephemeral key; set in .env to persist");
     k
 }
 
