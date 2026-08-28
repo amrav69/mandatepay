@@ -51,7 +51,45 @@ mandatepay/
 
 ## Architecture
 
-*Detailed diagram and trust boundaries land next commit.*
+```
+LLM (Nemotron 3 on integrate.api.nvidia.com)
+ │  proposes {item, merchant_id, amount_minor, reasoning}  (JSON only)
+ ▼
+Agent (src/bin/agent.rs) ── wallet guard: amount ≤ AGENT_BUDGET_MINOR ──▶ POST /v1/mandates
+                                                                    │
+Authority (mandates.rs) ◀── Ed25519 SigningKey (MANDATEPAY_SEED) ────┘
+ │  signs canonical_bytes(mandate) → 64B sig
+ ▼
+Mandate + signature + amount_minor ──POST /v1/checkout──▶ Policy Engine (policy.rs)
+                                                         │  9 gates: version / action / currency / cap>0
+                                                         │          merchant allowlist / amount>0 / amount≤cap
+                                                         │          sig verifies / not expired / nonce fresh
+                                                         ▼
+                                                   SQLite (store.rs)
+                                                   ├─ nonces (PRIMARY KEY → replay = REJECT)
+                                                   └─ decisions (append-only audit trail)
+                                                         │
+                                          ┌────────────────┴────────────────┐
+                                          ▼                                 ▼
+                                    Gateway (gateway.rs)              Dashboard (dashboard/index.html)
+                                    Mock  ↔  Razorpay test-mode      polls /v1/decisions + /v1/stats every 2s
+                                    live:false / live:true            click row → replay payload + reason
+```
+
+**Trust boundaries — LLM proposes, determinism disposes:**
+
+| Component | Can do | Cannot do |
+|---|---|---|
+| **Nemotron** | Output a JSON proposal | Touch keys, sign, or call Razorpay |
+| **Agent** | Validate proposal vs wallet, request mandate, submit checkout | Exceed `AGENT_BUDGET_MINOR`, bypass policy |
+| **Authority** | Sign mandates with `SigningKey` | Decide if a spend is allowed |
+| **Policy Engine** | `ALLOW/REJECT` with reason | Move money |
+| **Gateway** | `POST https://api.razorpay.com/v1/orders` with basic auth | Override a `REJECT` |
+| **Store** | Enforce nonce uniqueness via `PRIMARY KEY` | Be bypassed — even a valid sig replays as `REJECT` |
+
+**Gateway seam:** `Gateway::from_env()` reads `RAZORPAY_KEY_ID/SECRET`. Present → `Razorpay { basic_auth, live:true, receipt=mandate_id }`, absent → `Mock { live:false }`. Checkout code calls `gateway.create_order()` blind — the swap is one `match` arm in `src/gateway.rs:1`.
+
+**Deterministic seed:** `MANDATEPAY_SEED` (base64 32B) fixes the authority key. Server and `cargo run --bin eval` share it, so the harness can mint *validly signed* hostile mandates — the strongest attack class. No seed → ephemeral key per boot (fine for demos, eval refuses to run).
 
 ## Evaluation
 
