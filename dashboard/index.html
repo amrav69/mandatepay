@@ -12,138 +12,170 @@ html,body{height:100%}
 body{
   margin:0;
   font-family:"Geist",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-  background:#06080c;
-  color:#d9e2ef;
+  background:#040507;
+  color:#e6edf7;
   overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
 }
 body::before{
-  content:"";
-  position:fixed;inset:0;z-index:-2;
+  content:"";position:fixed;inset:0;z-index:-3;
   background:
-    radial-gradient(900px 520px at 18% -8%, rgba(88,130,255,0.22) 0%, transparent 60%),
-    radial-gradient(760px 480px at 92% 0%, rgba(168,85,247,0.18) 0%, transparent 60%),
-    radial-gradient(700px 500px at 50% 115%, rgba(16,185,129,0.10) 0%, transparent 60%),
-    linear-gradient(180deg, #070a0f 0%, #06080c 100%);
+    radial-gradient(820px 520px at 16% -6%, rgba(88,130,255,0.26) 0%, transparent 62%),
+    radial-gradient(760px 520px at 88% 2%, rgba(168,85,247,0.20) 0%, transparent 62%),
+    radial-gradient(860px 560px at 50% 110%, rgba(16,185,129,0.10) 0%, transparent 62%),
+    linear-gradient(180deg,#070a12 0%, #040507 55%, #050507 100%);
 }
 body::after{
-  content:"";
-  position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0.06;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+  content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:0.045;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 }
-a{color:#8ab4ff;text-decoration:none}
-a:hover{text-decoration:underline}
-.wrap{max-width:1160px;margin:0 auto;padding:28px 20px 40px}
+.orb{position:fixed;z-index:-1;pointer-events:none;filter:blur(40px);opacity:0.55}
+.orb1{width:520px;height:520px;left:-80px;top:120px;background:radial-gradient(circle at 30% 30%, rgba(88,130,255,0.35), transparent 70%);border-radius:50%}
+.orb2{width:560px;height:560px;right:-120px;top:-60px;background:radial-gradient(circle at 30% 30%, rgba(168,85,247,0.28), transparent 70%);border-radius:50%}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 18px 44px}
 .glass{
-  background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04));
-  border:1px solid rgba(255,255,255,0.10);
-  backdrop-filter:blur(22px) saturate(1.2);
-  -webkit-backdrop-filter:blur(22px) saturate(1.2);
+  position:relative;
+  background:linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04));
+  border:1px solid rgba(255,255,255,0.12);
+  backdrop-filter:blur(28px) saturate(1.35);
+  -webkit-backdrop-filter:blur(28px) saturate(1.35);
   box-shadow:
-    0 20px 60px rgba(0,0,0,0.55),
-    inset 0 1px 0 rgba(255,255,255,0.10),
-    inset 0 -1px 0 rgba(255,255,255,0.04);
-  border-radius:18px;
+    0 18px 50px rgba(0,0,0,0.55),
+    0 1px 0 rgba(255,255,255,0.14) inset,
+    0 -1px 0 rgba(255,255,255,0.04) inset;
+  border-radius:20px;
+  overflow:hidden;
+}
+.glass::before{
+  content:"";position:absolute;inset:0;border-radius:20px;
+  background:linear-gradient(180deg, rgba(255,255,255,0.10) 0%, transparent 22%);
+  pointer-events:none;
 }
 header.glass{
   display:flex;gap:18px;align-items:center;justify-content:space-between;
-  padding:18px 18px 18px 20px; flex-wrap:wrap;
+  padding:18px 18px 18px 20px;flex-wrap:wrap;
 }
-.brand{display:flex;gap:14px;align-items:center}
+.brand{display:flex;gap:14px;align-items:center;min-width:0}
 .logo{
-  width:42px;height:42px;border-radius:12px;
-  background:radial-gradient(120% 120% at 30% 20%, rgba(255,255,255,0.95), rgba(160,180,255,0.9) 35%, rgba(88,130,255,0.9) 70%, rgba(18,24,40,1) 100%);
-  border:1px solid rgba(255,255,255,0.55);
-  box-shadow:0 10px 30px rgba(88,130,255,0.35), inset 0 1px 0 rgba(255,255,255,0.8);
-  display:grid;place-items:center;font-family:"Geist Mono",monospace;font-weight:700;font-size:16px;color:#0b1020;letter-spacing:-0.04em
+  width:44px;height:44px;border-radius:13px;flex:0 0 44px;
+  background:radial-gradient(130% 130% at 28% 18%, #fff 0%, #d6deff 22%, #8aa4ff 48%, #3b5bff 72%, #10162a 100%);
+  border:1px solid rgba(255,255,255,0.70);
+  box-shadow:0 12px 28px rgba(59,91,255,0.40), inset 0 1px 0 rgba(255,255,255,0.9);
+  display:grid;place-items:center;font-family:"Geist Mono",monospace;font-weight:700;font-size:15px;color:#0b1020;letter-spacing:-0.05em
 }
-h1{margin:0;font-family:"Instrument Serif",Georgia,serif;font-weight:400;font-size:26px;letter-spacing:-0.02em;line-height:1}
-h1 span{font-style:italic;font-weight:400;color:#8ab4ff}
-.sub{color:#9aa8c0;font-size:12.5px;line-height:1.6;margin-top:4px;max-width:620px}
-.sub strong{color:#d9e2ef;font-weight:600}
+h1{margin:0;font-family:"Instrument Serif",Georgia,serif;font-weight:400;font-size:27px;letter-spacing:-0.025em;line-height:1}
+h1 span{font-style:italic;color:#8ab4ff}
+.sub{color:#9aa8c0;font-size:12.7px;line-height:1.65;margin-top:4px;max-width:640px}
+.sub strong{color:#dbe6f7;font-weight:600}
 .pills{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .pill{
-  font-size:11px;letter-spacing:0.04em;text-transform:uppercase;
+  font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;
   padding:6px 10px;border-radius:999px;
-  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);
-  backdrop-filter:blur(12px);color:#b8c6df;white-space:nowrap
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);
+  backdrop-filter:blur(14px);color:#c2d0e6;white-space:nowrap;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.08);
 }
-.pill-live{background:rgba(29,214,122,0.12);border-color:rgba(29,214,122,0.28);color:#a7f3ce}
+.pill-live{background:rgba(29,214,122,0.14);border-color:rgba(29,214,122,0.30);color:#b7f7d6}
 .dot{width:7px;height:7px;border-radius:50%;background:#1dd67a;box-shadow:0 0 0 6px rgba(29,214,122,0.18);display:inline-block;vertical-align:middle;margin-right:6px}
 .dot.paused{background:#ff6b6b;box-shadow:0 0 0 6px rgba(255,107,107,0.18)}
-.hand{
-  font-family:"Instrument Serif",Georgia,serif;font-style:italic;font-weight:400;
-  color:#c9b8ff;opacity:0.9;font-size:13px;letter-spacing:0.01em;
-  transform:rotate(-0.8deg);display:inline-block
-}
+.hand{font-family:"Instrument Serif",Georgia,serif;font-style:italic;color:#c9b8ff;opacity:0.92;font-size:13px;transform:rotate(-0.7deg);display:inline-block;margin-left:4px}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}
-@media(max-width:900px){.grid4{grid-template-columns:repeat(2,1fr)} header.glass{padding:16px}}
-@media(max-width:560px){.grid4{grid-template-columns:1fr} h1{font-size:23px}}
-.card{padding:16px 16px 14px;position:relative;overflow:hidden}
-.card::before{
-  content:"";position:absolute;inset:0;border-radius:18px;
-  background:radial-gradient(400px 120px at 20% 0%, rgba(255,255,255,0.10), transparent 60%);
-  pointer-events:none
-}
+@media(max-width:920px){.grid4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.grid4{grid-template-columns:1fr} h1{font-size:24px}}
+.card{padding:16px 16px 14px}
 .k{font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8ea0bb}
-.v{font-size:26px;font-weight:600;letter-spacing:-0.03em;margin-top:8px;line-height:1}
+.v{font-size:28px;font-weight:600;letter-spacing:-0.04em;margin-top:8px;line-height:1;font-variant-numeric:tabular-nums}
 .v.allow{color:#1dd67a}
-.v.reject{color:#ff6b6b}
+.v.reject{color:#ff7a7a}
 .v.issued{color:#8ab4ff}
 .h{font-size:11px;color:#7d8ca6;margin-top:6px;line-height:1.4}
 .toolbar{
   display:flex;gap:10px;align-items:center;flex-wrap:wrap;
   padding:12px 14px;margin:0 0 14px;
 }
-.toolbar label{font-size:12px;color:#9aa8c0;display:flex;gap:8px;align-items:center}
-select,button{
-  font:inherit;font-size:12.5px;
-  background:rgba(255,255,255,0.06);color:#d9e2ef;
-  border:1px solid rgba(255,255,255,0.12);border-radius:10px;
-  padding:8px 11px;backdrop-filter:blur(12px)
+.status{font-size:12px;color:#8ea0bb}
+.select{position:relative}
+.select-trigger{
+  display:flex;align-items:center;gap:8px;
+  min-width:118px;justify-content:space-between;
+  padding:9px 11px;border-radius:12px;
+  background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.13);
+  backdrop-filter:blur(16px);color:#d9e2ef;font-size:12.5px;cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.08);
 }
-button{cursor:pointer;transition:all .15s}
-button:hover{background:rgba(255,255,255,0.10);border-color:rgba(255,255,255,0.18);transform:translateY(-1px)}
-button:active{transform:translateY(0px)}
-button.active{background:rgba(138,180,255,0.18);border-color:rgba(138,180,255,0.35);color:#e6eeff}
-.status{font-size:12px;color:#8ea0bb;margin-left:4px}
+.select-trigger:hover{background:rgba(255,255,255,0.10)}
+.select-trigger svg{opacity:0.7;transition:transform .18s}
+.select.open .select-trigger svg{transform:rotate(180deg)}
+.select-menu{
+  position:absolute;top:calc(100% + 8px);left:0;min-width:140px;
+  padding:6px;border-radius:14px;z-index:50;
+  background:rgba(18,22,33,0.78);
+  border:1px solid rgba(255,255,255,0.14);
+  backdrop-filter:blur(24px) saturate(1.3);
+  -webkit-backdrop-filter:blur(24px) saturate(1.3);
+  box-shadow:0 18px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.select-menu div{
+  padding:9px 10px;border-radius:9px;font-size:12.5px;color:#cbd6ea;cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.select-menu div:hover{background:rgba(255,255,255,0.07);color:#e6edf7}
+.select-menu div.selected{background:rgba(138,180,255,0.18);color:#e6eeff;border:1px solid rgba(138,180,255,0.28)}
+.select-menu div.selected::after{content:"✓";font-size:11px;opacity:0.9}
+.btn{
+  font:inherit;font-size:12.5px;
+  background:rgba(255,255,255,0.07);color:#d9e2ef;
+  border:1px solid rgba(255,255,255,0.13);border-radius:12px;
+  padding:9px 12px;backdrop-filter:blur(16px);cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.07);
+  transition:all .15s;
+}
+.btn:hover{background:rgba(255,255,255,0.11);transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn.active{background:rgba(138,180,255,0.18);border-color:rgba(138,180,255,0.34);color:#e6eeff}
 .table-wrap{overflow:hidden;padding:0}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
 thead th{
   text-align:left;font-weight:600;color:#9aa8c0;
   background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.08);
-  padding:11px 12px;white-space:nowrap;font-size:11px;letter-spacing:0.04em;text-transform:uppercase
+  padding:11px 12px;white-space:nowrap;font-size:11px;letter-spacing:0.05em;text-transform:uppercase
 }
-tbody td{padding:11px 12px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top}
+thead th:first-child{width:64px;text-align:right}
+thead th:nth-child(2){width:162px}
+thead th:nth-child(3){width:132px}
+thead th:nth-child(4){width:112px}
+thead th:last-child{width:240px}
+tbody td{padding:11px 12px;border-bottom:1px solid rgba(255,255,255,0.05);vertical-align:middle;overflow:hidden}
+tbody td:first-child{text-align:right;font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
 tbody tr{cursor:pointer;transition:background .12s}
 tbody tr:hover{background:rgba(255,255,255,0.04)}
-.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;border:1px solid;backdrop-filter:blur(8px)}
+.col-id{font-family:"Geist Mono",monospace;font-size:12px;color:#9ab0c9;white-space:nowrap}
+.col-ts{color:#8ea0bb;white-space:nowrap;font-size:12px}
+.col-ep{font-family:"Geist Mono",monospace;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;border:1px solid;backdrop-filter:blur(8px);white-space:nowrap}
 .badge-ALLOW{color:#a7f3ce;background:rgba(29,214,122,0.14);border-color:rgba(29,214,122,0.30)}
 .badge-REJECT{color:#ffb4b4;background:rgba(255,107,107,0.14);border-color:rgba(255,107,107,0.28)}
 .badge-ISSUED{color:#b9d4ff;background:rgba(138,180,255,0.14);border-color:rgba(138,180,255,0.28)}
-.mono{font-family:"Geist Mono",ui-monospace,monospace;font-variant-ligatures:none;word-break:break-all;font-size:11.5px}
-.ts{color:#8ea0bb;white-space:nowrap;font-size:11.5px}
-.reason{color:#cbd6ea;line-height:1.5}
-.payload{
-  white-space:pre-wrap;word-break:break-all;
-  background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.08);
-  border-radius:12px;padding:12px;max-height:320px;overflow:auto;
-  font-family:"Geist Mono",monospace;font-size:11px;line-height:1.6
-}
+.reason{color:#cbd6ea;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mono{font-family:"Geist Mono",monospace;word-break:break-all}
+.payload-cell{color:#8ea0bb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+.payload-pre{white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,0.30);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px;max-height:320px;overflow:auto;font-family:"Geist Mono",monospace;font-size:11px;line-height:1.6}
 .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media(max-width:760px){.detail-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.detail-grid{grid-template-columns:1fr} thead th:last-child{display:none} tbody td:last-child{display:none}}
 .k2{font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#8ea0bb;margin-bottom:6px}
 .foot{margin:14px 2px 0;color:#7d8ca6;font-size:11.5px;line-height:1.7}
 .foot code{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);padding:1px 6px;border-radius:6px;font-family:"Geist Mono",monospace;font-size:11px}
 </style>
 </head>
 <body>
+<div class="orb orb1"></div><div class="orb orb2"></div>
 <div class="wrap">
   <header class="glass">
     <div class="brand">
       <div class="logo">M$</div>
       <div>
         <h1>MandatePay <span>— live decisions</span></h1>
-        <div class="sub">Signed cheques for AI agents. Ed25519 mandate → <strong>9 policy gates</strong> → Razorpay test order. Every row is a SQLite audit row. <span class="hand">— crafted for Buildathon 2026</span></div>
+        <div class="sub">Signed cheques for AI agents. Ed25519 mandate → <strong>9 policy gates</strong> → Razorpay test order. Every row is a SQLite audit row. <span class="hand">— human-crafted for Buildathon 2026</span></div>
       </div>
     </div>
     <div class="pills">
@@ -161,9 +193,20 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
   </div>
 
   <div class="glass toolbar">
-    <label>Rows <select id="limitSel"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label>
-    <button id="pauseBtn" onclick="togglePause()">Pause</button>
-    <button onclick="refreshOnce()">Refresh now</button>
+    <div class="select" id="limitSelect">
+      <button class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span>Rows <strong id="limitValue">50</strong></span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="select-menu" id="limitMenu" hidden>
+        <div data-value="25">25 rows</div>
+        <div data-value="50" class="selected">50 rows</div>
+        <div data-value="100">100 rows</div>
+        <div data-value="200">200 rows</div>
+      </div>
+    </div>
+    <button class="btn" id="pauseBtn" onclick="togglePause()">Pause</button>
+    <button class="btn" onclick="refreshOnce()">Refresh now</button>
     <span id="status" class="status">loading…</span>
     <span style="flex:1"></span>
     <span class="status" style="opacity:0.8">Click a row → replay its signed payload</span>
@@ -182,7 +225,23 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
 </div>
 
 <script>
-let paused=false, expandedId=null;
+let paused=false, expandedId=null, currentLimit=50;
+const sel = document.getElementById('limitSelect');
+const trig = sel.querySelector('.select-trigger');
+const menu = document.getElementById('limitMenu');
+const valEl = document.getElementById('limitValue');
+trig.addEventListener('click', ()=>{ const open = menu.hasAttribute('hidden'); menu.hidden=!open; sel.classList.toggle('open',open); trig.setAttribute('aria-expanded', String(open)); });
+menu.addEventListener('click', (e)=>{
+  const opt = e.target.closest('[data-value]');
+  if(!opt) return;
+  currentLimit = parseInt(opt.dataset.value,10);
+  valEl.textContent = String(currentLimit);
+  menu.querySelectorAll('[data-value]').forEach(n=> n.classList.toggle('selected', n===opt));
+  menu.hidden=true; sel.classList.remove('open');
+  refreshOnce();
+});
+document.addEventListener('click', (e)=>{ if(!sel.contains(e.target)){ menu.hidden=true; sel.classList.remove('open'); } });
+
 function togglePause(){
   paused=!paused;
   const b=document.getElementById('pauseBtn');
@@ -199,11 +258,10 @@ function fmtTs(ts){ try{ return new Date(ts*1000).toLocaleString(); }catch{ retu
 function truncate(s,n){ return !s||s.length<=n ? (s||"") : s.slice(0,n-1)+"…"; }
 let cachedRows=[];
 async function refreshOnce(){
-  const limit=document.getElementById('limitSel').value;
   const status=document.getElementById('status');
   try{
     const [dRes,sRes]=await Promise.all([
-      fetchJSON('/v1/decisions?limit='+limit),
+      fetchJSON('/v1/decisions?limit='+currentLimit),
       fetchJSON('/v1/stats')
     ]);
     const rows=dRes.decisions||[];
@@ -212,14 +270,13 @@ async function refreshOnce(){
     document.getElementById('sAllow').textContent=sRes.allow??0;
     document.getElementById('sReject').textContent=sRes.reject??0;
     document.getElementById('sIssued').textContent=sRes.issued??0;
-    const live = rows.some(r=> (r.reason||"").includes("razorpay")) || (sRes.total>0 && rows.length>0);
-    document.getElementById('gatewayPill').textContent = live ? "gateway: razorpay-test · live" : "gateway: mock";
+    document.getElementById('gatewayPill').textContent = (rows.length && sRes.total) ? "gateway: razorpay-test · live" : "gateway: mock";
     status.textContent="updated "+new Date().toLocaleTimeString()+" · "+rows.length+" rows";
     status.style.color="#8ea0bb";
     render(rows);
   }catch(e){
     status.textContent="error: "+e.message;
-    status.style.color="#ff6b6b";
+    status.style.color="#ff7a7a";
   }
 }
 function render(rows){
@@ -233,12 +290,12 @@ function render(rows){
     const tr=document.createElement('tr');
     const isExpanded = expandedId===r.id;
     tr.innerHTML=`
-      <td class="mono">${r.id}</td>
-      <td class="ts">${fmtTs(r.ts)}</td>
-      <td class="mono">${r.endpoint}</td>
+      <td class="col-id">${r.id}</td>
+      <td class="col-ts">${fmtTs(r.ts)}</td>
+      <td class="col-ep" title="${r.endpoint}">${r.endpoint}</td>
       <td><span class="badge badge-${r.decision}">${r.decision}</span></td>
-      <td class="reason">${truncate(r.reason,120)}</td>
-      <td class="mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8ea0bb">${truncate(r.payload,64)}</td>
+      <td class="reason" title="${r.reason.replaceAll('"','&quot;')}">${truncate(r.reason,112)}</td>
+      <td class="payload-cell" title="${r.payload.replaceAll('"','&quot;')}">${truncate(r.payload,58)}</td>
     `;
     tr.addEventListener('click',()=>{ expandedId = isExpanded ? null : r.id; render(rows); });
     tb.appendChild(tr);
@@ -252,8 +309,8 @@ function render(rows){
       try{ pretty=JSON.stringify(JSON.parse(r.payload),null,2); }catch{}
       td.innerHTML=`
         <div class="detail-grid">
-          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px">${r.reason}</div></div>
-          <div><div class="k2">Signed mandate payload — what was verified</div><pre class="payload">${pretty}</pre></div>
+          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px;white-space:normal;overflow:visible;text-overflow:clip">${r.reason}</div></div>
+          <div><div class="k2">Signed mandate payload — what was verified <span style="opacity:0.6">· click to copy</span></div><pre class="payload-pre" onclick="navigator.clipboard.writeText(this.textContent).then(()=>{this.style.borderColor='rgba(138,180,255,0.35)'; setTimeout(()=>this.style.borderColor='',900)})">${pretty}</pre></div>
         </div>
       `;
       tb.appendChild(er);
