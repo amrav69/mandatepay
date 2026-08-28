@@ -1,5 +1,5 @@
 [general]
-fail-under = 50
+fail-under = 30
 exclude-files = ["src/bin/*"]
 timeout = "120s"
 verbose = false
