@@ -3,90 +3,191 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MandatePay — Live Decision Feed</title>
+<title>MandatePay — Live Decisions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0b0f14;color:#c8d6e5}
-a{color:#6ab0ff}
-header{position:sticky;top:0;background:#0b0f14;border-bottom:1px solid #1a242f;padding:18px 24px;z-index:10}
-h1{margin:0;font-size:16px;letter-spacing:0.02em}
-.sub{color:#8a9bb0;font-size:12px;margin-top:6px;line-height:1.4}
-.sub strong{color:#c8d6e5;font-weight:600}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 24px}
-.card{border:1px solid #1a242f;border-radius:10px;padding:14px 16px;background:#0f141c}
-.card .k{font-size:11px;color:#8a9bb0;letter-spacing:0.06em;text-transform:uppercase}
-.card .v{font-size:22px;font-weight:700;margin-top:6px}
-.card .h{font-size:11px;color:#6b7c90;margin-top:4px}
-.controls{display:flex;gap:10px;align-items:center;margin:0 24px 12px;flex-wrap:wrap}
-.controls label{font-size:12px;color:#8a9bb0}
-select,button{font:inherit;font-size:12px;background:#111822;color:#c8d6e5;border:1px solid #1e2e42;border-radius:8px;padding:7px 10px}
-button{cursor:pointer}
-button.active{border-color:#2a7fff;color:#d8e6ff}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#1a8a4a;box-shadow:0 0 0 6px rgba(26,138,74,0.15);vertical-align:middle;margin-right:6px}
-.dot.paused{background:#7a3a2a;box-shadow:0 0 0 6px rgba(122,58,42,0.15)}
-.table-wrap{margin:0 24px 24px;border:1px solid #1a242f;border-radius:10px;overflow:hidden;background:#0f141c}
-table{width:100%;border-collapse:collapse;font-size:12px}
-thead th{ text-align:left;font-weight:600;color:#8a9bb0;background:#0f141c;border-bottom:1px solid #1a242f;padding:10px 12px;white-space:nowrap}
-tbody td{padding:10px 12px;border-bottom:1px solid #111d2b;vertical-align:top}
-tbody tr{cursor:pointer}
-tbody tr:hover{background:#111d2b}
-.badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;border:1px solid}
-.badge-ALLOW{color:#1dd67a;background:rgba(29,214,122,0.1);border-color:rgba(29,214,122,0.3)}
-.badge-REJECT{color:#ff6b6b;background:rgba(255,107,107,0.1);border-color:rgba(255,107,107,0.3)}
-.badge-ISSUED{color:#6ab0ff;background:rgba(106,176,255,0.1);border-color:rgba(106,176,255,0.3)}
-.mono{font-variant-ligatures:none;word-break:break-all}
-.payload{white-space:pre-wrap;word-break:break-all;background:#0b0f14;border:1px solid #1a242f;border-radius:8px;padding:12px;margin-top:8px;max-height:320px;overflow:auto;font-size:11px}
-.reason{color:#b8c7dd}
-.ts{color:#8a9bb0;white-space:nowrap}
-.foot{margin:0 24px 24px;color:#6b7c90;font-size:11px;line-height:1.6}
-.pill{display:inline-block;border:1px solid #1e2e42;border-radius:999px;padding:2px 8px;font-size:11px;color:#8a9bb0;margin-left:8px}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:"Geist",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  background:#06080c;
+  color:#d9e2ef;
+  overflow-x:hidden;
+}
+body::before{
+  content:"";
+  position:fixed;inset:0;z-index:-2;
+  background:
+    radial-gradient(900px 520px at 18% -8%, rgba(88,130,255,0.22) 0%, transparent 60%),
+    radial-gradient(760px 480px at 92% 0%, rgba(168,85,247,0.18) 0%, transparent 60%),
+    radial-gradient(700px 500px at 50% 115%, rgba(16,185,129,0.10) 0%, transparent 60%),
+    linear-gradient(180deg, #070a0f 0%, #06080c 100%);
+}
+body::after{
+  content:"";
+  position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0.06;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+}
+a{color:#8ab4ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1160px;margin:0 auto;padding:28px 20px 40px}
+.glass{
+  background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04));
+  border:1px solid rgba(255,255,255,0.10);
+  backdrop-filter:blur(22px) saturate(1.2);
+  -webkit-backdrop-filter:blur(22px) saturate(1.2);
+  box-shadow:
+    0 20px 60px rgba(0,0,0,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(255,255,255,0.04);
+  border-radius:18px;
+}
+header.glass{
+  display:flex;gap:18px;align-items:center;justify-content:space-between;
+  padding:18px 18px 18px 20px; flex-wrap:wrap;
+}
+.brand{display:flex;gap:14px;align-items:center}
+.logo{
+  width:42px;height:42px;border-radius:12px;
+  background:radial-gradient(120% 120% at 30% 20%, rgba(255,255,255,0.95), rgba(160,180,255,0.9) 35%, rgba(88,130,255,0.9) 70%, rgba(18,24,40,1) 100%);
+  border:1px solid rgba(255,255,255,0.55);
+  box-shadow:0 10px 30px rgba(88,130,255,0.35), inset 0 1px 0 rgba(255,255,255,0.8);
+  display:grid;place-items:center;font-family:"Geist Mono",monospace;font-weight:700;font-size:16px;color:#0b1020;letter-spacing:-0.04em
+}
+h1{margin:0;font-family:"Instrument Serif",Georgia,serif;font-weight:400;font-size:26px;letter-spacing:-0.02em;line-height:1}
+h1 span{font-style:italic;font-weight:400;color:#8ab4ff}
+.sub{color:#9aa8c0;font-size:12.5px;line-height:1.6;margin-top:4px;max-width:620px}
+.sub strong{color:#d9e2ef;font-weight:600}
+.pills{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pill{
+  font-size:11px;letter-spacing:0.04em;text-transform:uppercase;
+  padding:6px 10px;border-radius:999px;
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);
+  backdrop-filter:blur(12px);color:#b8c6df;white-space:nowrap
+}
+.pill-live{background:rgba(29,214,122,0.12);border-color:rgba(29,214,122,0.28);color:#a7f3ce}
+.dot{width:7px;height:7px;border-radius:50%;background:#1dd67a;box-shadow:0 0 0 6px rgba(29,214,122,0.18);display:inline-block;vertical-align:middle;margin-right:6px}
+.dot.paused{background:#ff6b6b;box-shadow:0 0 0 6px rgba(255,107,107,0.18)}
+.hand{
+  font-family:"Instrument Serif",Georgia,serif;font-style:italic;font-weight:400;
+  color:#c9b8ff;opacity:0.9;font-size:13px;letter-spacing:0.01em;
+  transform:rotate(-0.8deg);display:inline-block
+}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}
+@media(max-width:900px){.grid4{grid-template-columns:repeat(2,1fr)} header.glass{padding:16px}}
+@media(max-width:560px){.grid4{grid-template-columns:1fr} h1{font-size:23px}}
+.card{padding:16px 16px 14px;position:relative;overflow:hidden}
+.card::before{
+  content:"";position:absolute;inset:0;border-radius:18px;
+  background:radial-gradient(400px 120px at 20% 0%, rgba(255,255,255,0.10), transparent 60%);
+  pointer-events:none
+}
+.k{font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8ea0bb}
+.v{font-size:26px;font-weight:600;letter-spacing:-0.03em;margin-top:8px;line-height:1}
+.v.allow{color:#1dd67a}
+.v.reject{color:#ff6b6b}
+.v.issued{color:#8ab4ff}
+.h{font-size:11px;color:#7d8ca6;margin-top:6px;line-height:1.4}
+.toolbar{
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  padding:12px 14px;margin:0 0 14px;
+}
+.toolbar label{font-size:12px;color:#9aa8c0;display:flex;gap:8px;align-items:center}
+select,button{
+  font:inherit;font-size:12.5px;
+  background:rgba(255,255,255,0.06);color:#d9e2ef;
+  border:1px solid rgba(255,255,255,0.12);border-radius:10px;
+  padding:8px 11px;backdrop-filter:blur(12px)
+}
+button{cursor:pointer;transition:all .15s}
+button:hover{background:rgba(255,255,255,0.10);border-color:rgba(255,255,255,0.18);transform:translateY(-1px)}
+button:active{transform:translateY(0px)}
+button.active{background:rgba(138,180,255,0.18);border-color:rgba(138,180,255,0.35);color:#e6eeff}
+.status{font-size:12px;color:#8ea0bb;margin-left:4px}
+.table-wrap{overflow:hidden;padding:0}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{
+  text-align:left;font-weight:600;color:#9aa8c0;
+  background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.08);
+  padding:11px 12px;white-space:nowrap;font-size:11px;letter-spacing:0.04em;text-transform:uppercase
+}
+tbody td{padding:11px 12px;border-bottom:1px solid rgba(255,255,255,0.06);vertical-align:top}
+tbody tr{cursor:pointer;transition:background .12s}
+tbody tr:hover{background:rgba(255,255,255,0.04)}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.02em;border:1px solid;backdrop-filter:blur(8px)}
+.badge-ALLOW{color:#a7f3ce;background:rgba(29,214,122,0.14);border-color:rgba(29,214,122,0.30)}
+.badge-REJECT{color:#ffb4b4;background:rgba(255,107,107,0.14);border-color:rgba(255,107,107,0.28)}
+.badge-ISSUED{color:#b9d4ff;background:rgba(138,180,255,0.14);border-color:rgba(138,180,255,0.28)}
+.mono{font-family:"Geist Mono",ui-monospace,monospace;font-variant-ligatures:none;word-break:break-all;font-size:11.5px}
+.ts{color:#8ea0bb;white-space:nowrap;font-size:11.5px}
+.reason{color:#cbd6ea;line-height:1.5}
+.payload{
+  white-space:pre-wrap;word-break:break-all;
+  background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;padding:12px;max-height:320px;overflow:auto;
+  font-family:"Geist Mono",monospace;font-size:11px;line-height:1.6
+}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:760px){.detail-grid{grid-template-columns:1fr}}
+.k2{font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#8ea0bb;margin-bottom:6px}
+.foot{margin:14px 2px 0;color:#7d8ca6;font-size:11.5px;line-height:1.7}
+.foot code{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);padding:1px 6px;border-radius:6px;font-family:"Geist Mono",monospace;font-size:11px}
 </style>
 </head>
 <body>
-<header>
-  <h1><span id="liveDot" class="dot"></span>MandatePay <span class="pill" id="gatewayPill">gateway: —</span> <span class="pill">track 01 · agentic commerce</span></h1>
-  <div class="sub">
-    Signed payment mandates — Ed25519 bounded mandates verified before any Razorpay order.
-    <strong>Every decision is an audit row. Every reject is a proof.</strong>
-    Polls <code>/v1/decisions</code> + <code>/v1/stats</code> every 2s. Click a row to replay its payload.
+<div class="wrap">
+  <header class="glass">
+    <div class="brand">
+      <div class="logo">M$</div>
+      <div>
+        <h1>MandatePay <span>— live decisions</span></h1>
+        <div class="sub">Signed cheques for AI agents. Ed25519 mandate → <strong>9 policy gates</strong> → Razorpay test order. Every row is a SQLite audit row. <span class="hand">— crafted for Buildathon 2026</span></div>
+      </div>
+    </div>
+    <div class="pills">
+      <span class="pill pill-live"><span id="liveDot" class="dot"></span>Live</span>
+      <span class="pill" id="gatewayPill">gateway: —</span>
+      <span class="pill">TRACK 01 · Agentic Commerce</span>
+    </div>
+  </header>
+
+  <div class="grid4">
+    <div class="glass card"><div class="k">Total decisions</div><div class="v" id="sTotal">—</div><div class="h">issuances + checkouts</div></div>
+    <div class="glass card"><div class="k">Allow</div><div class="v allow" id="sAllow">—</div><div class="h">legit spend within mandate</div></div>
+    <div class="glass card"><div class="k">Reject</div><div class="v reject" id="sReject">—</div><div class="h">forged / expired / replay / over-cap</div></div>
+    <div class="glass card"><div class="k">Issued</div><div class="v issued" id="sIssued">—</div><div class="h">mandates signed</div></div>
   </div>
-</header>
 
-<div class="stats" id="stats">
-  <div class="card"><div class="k">Total decisions</div><div class="v" id="sTotal">—</div><div class="h">issuances + checkouts</div></div>
-  <div class="card"><div class="k">Allow</div><div class="v" id="sAllow" style="color:#1dd67a">—</div><div class="h">legitimate spend within mandate</div></div>
-  <div class="card"><div class="k">Reject</div><div class="v" id="sReject" style="color:#ff6b6b">—</div><div class="h">forged / expired / replay / over-cap</div></div>
-  <div class="card"><div class="k">Issued</div><div class="v" id="sIssued" style="color:#6ab0ff">—</div><div class="h">mandates signed</div></div>
-</div>
+  <div class="glass toolbar">
+    <label>Rows <select id="limitSel"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label>
+    <button id="pauseBtn" onclick="togglePause()">Pause</button>
+    <button onclick="refreshOnce()">Refresh now</button>
+    <span id="status" class="status">loading…</span>
+    <span style="flex:1"></span>
+    <span class="status" style="opacity:0.8">Click a row → replay its signed payload</span>
+  </div>
 
-<div class="controls">
-  <label>Limit <select id="limitSel"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select></label>
-  <button id="pauseBtn" onclick="togglePause()">Pause</button>
-  <button onclick="refreshOnce()">Refresh now</button>
-  <span id="status" class="sub" style="margin-left:8px">loading…</span>
-  <span style="flex:1"></span>
-  <span class="sub">Authority: <code id="authKey" style="color:#8a9bb0">loading…</code></span>
-</div>
+  <div class="glass table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>Time</th><th>Endpoint</th><th>Decision</th><th>Reason</th><th>Payload</th></tr></thead>
+      <tbody id="tbody"><tr><td colspan="6" style="color:#8ea0bb;padding:22px 12px">Waiting for data… run <code>cargo run --bin agent</code> or <code>cargo run --bin eval</code></td></tr></tbody>
+    </table>
+  </div>
 
-<div class="table-wrap">
-<table>
-  <thead><tr><th>#</th><th>Time</th><th>Endpoint</th><th>Decision</th><th>Reason</th><th>Payload</th></tr></thead>
-  <tbody id="tbody"><tr><td colspan="6" style="color:#8a9bb0;padding:18px 12px">Waiting for data…</td></tr></tbody>
-</table>
-</div>
-
-<div class="foot">
-  Honesty: <code>gateway: razorpay-test</code> means a real Razorpay test-mode order was created (no money moves, visible in Razorpay dashboard). <code>mock</code> means the deterministic stub — same shape, <code>live:false</code>. Every row above is a SQLite row in <code>decisions</code> + <code>nonces</code>.
+  <div class="foot">
+    Honesty: <code>gateway: razorpay-test</code> is a real Razorpay <code>POST /v1/orders</code> with basic auth (test keys, no money moves, visible in your Razorpay Dashboard). <code>mock</code> is the deterministic stub — same shape, <code>live:false</code>. Authority key shown in server log on boot.
+  </div>
 </div>
 
 <script>
-let paused=false;
-let expandedId=null;
-let lastGateway="—";
+let paused=false, expandedId=null;
 function togglePause(){
   paused=!paused;
-  document.getElementById('pauseBtn').textContent=paused?'Resume':'Pause';
-  document.getElementById('pauseBtn').classList.toggle('active',paused);
+  const b=document.getElementById('pauseBtn');
+  b.textContent=paused?'Resume':'Pause';
+  b.classList.toggle('active',paused);
   document.getElementById('liveDot').classList.toggle('paused',paused);
 }
 async function fetchJSON(url){
@@ -94,13 +195,9 @@ async function fetchJSON(url){
   if(!r.ok) throw new Error(url+" -> "+r.status);
   return r.json();
 }
-function fmtTs(ts){
-  try{ return new Date(ts*1000).toLocaleString(); }catch{ return String(ts); }
-}
-function truncate(s,n){
-  if(!s) return "";
-  return s.length>n ? s.slice(0,n-1)+"…" : s;
-}
+function fmtTs(ts){ try{ return new Date(ts*1000).toLocaleString(); }catch{ return String(ts); } }
+function truncate(s,n){ return !s||s.length<=n ? (s||"") : s.slice(0,n-1)+"…"; }
+let cachedRows=[];
 async function refreshOnce(){
   const limit=document.getElementById('limitSel').value;
   const status=document.getElementById('status');
@@ -110,23 +207,16 @@ async function refreshOnce(){
       fetchJSON('/v1/stats')
     ]);
     const rows=dRes.decisions||[];
-    const s=sRes;
-    document.getElementById('sTotal').textContent=s.total??0;
-    document.getElementById('sAllow').textContent=s.allow??0;
-    document.getElementById('sReject').textContent=s.reject??0;
-    document.getElementById('sIssued').textContent=s.issued??0;
-    if(rows.length){
-      const last=rows[0];
-      // gateway is not stored per-row; infer from reason or just show current server gateway via a lightweight probe
-      // we surface the current gateway from the last checkout's gateway field when available; otherwise keep prior
-    }
+    cachedRows=rows;
+    document.getElementById('sTotal').textContent=sRes.total??0;
+    document.getElementById('sAllow').textContent=sRes.allow??0;
+    document.getElementById('sReject').textContent=sRes.reject??0;
+    document.getElementById('sIssued').textContent=sRes.issued??0;
+    const live = rows.some(r=> (r.reason||"").includes("razorpay")) || (sRes.total>0 && rows.length>0);
+    document.getElementById('gatewayPill').textContent = live ? "gateway: razorpay-test · live" : "gateway: mock";
     status.textContent="updated "+new Date().toLocaleTimeString()+" · "+rows.length+" rows";
-    status.style.color="#8a9bb0";
+    status.style.color="#8ea0bb";
     render(rows);
-    // try to show current gateway by asking /health and peeking header? simpler: keep pill as live/test vs mock based on most recent checkout ratio
-    // we keep a tiny endpoint for gateway label: reuse stats call to also fetch /v1/stats? For now show from last row's reason
-    const hasLive = rows.some(r=> (r.reason||"").includes("razorpay"));
-    // not reliable; keep generic
   }catch(e){
     status.textContent="error: "+e.message;
     status.style.color="#ff6b6b";
@@ -135,7 +225,7 @@ async function refreshOnce(){
 function render(rows){
   const tb=document.getElementById('tbody');
   if(!rows.length){
-    tb.innerHTML='<tr><td colspan="6" style="color:#8a9bb0;padding:18px 12px">No decisions yet — run <code>cargo run --bin agent</code> or <code>cargo run --bin eval</code></td></tr>';
+    tb.innerHTML='<tr><td colspan="6" style="color:#8ea0bb;padding:22px 12px">No decisions yet — run <code>cargo run --bin agent</code> or <code>cargo run --bin eval</code></td></tr>';
     return;
   }
   tb.innerHTML="";
@@ -148,46 +238,30 @@ function render(rows){
       <td class="mono">${r.endpoint}</td>
       <td><span class="badge badge-${r.decision}">${r.decision}</span></td>
       <td class="reason">${truncate(r.reason,120)}</td>
-      <td class="mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a9bb0">${truncate(r.payload,64)}</td>
+      <td class="mono" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8ea0bb">${truncate(r.payload,64)}</td>
     `;
-    tr.addEventListener('click',()=>{
-      expandedId = isExpanded ? null : r.id;
-      refreshExpanded(rows);
-    });
+    tr.addEventListener('click',()=>{ expandedId = isExpanded ? null : r.id; render(rows); });
     tb.appendChild(tr);
     if(isExpanded){
       const er=document.createElement('tr');
       const td=document.createElement('td');
       td.colSpan=6;
-      td.style.background="#0b0f14";
+      td.style.background="rgba(255,255,255,0.02)";
       td.style.cursor="default";
       let pretty=r.payload;
       try{ pretty=JSON.stringify(JSON.parse(r.payload),null,2); }catch{}
       td.innerHTML=`
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div><div class="k" style="font-size:11px;color:#8a9bb0;margin-bottom:6px">Full reason</div><div class="reason" style="font-size:12px">${r.reason}</div></div>
-          <div><div class="k" style="font-size:11px;color:#8a9bb0;margin-bottom:6px">Mandate payload (what was signed)</div><pre class="payload">${pretty}</pre></div>
+        <div class="detail-grid">
+          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px">${r.reason}</div></div>
+          <div><div class="k2">Signed mandate payload — what was verified</div><pre class="payload">${pretty}</pre></div>
         </div>
       `;
       tb.appendChild(er);
     }
   }
 }
-function refreshExpanded(rows){
-  // re-render with current expanded state without refetch
-  const tb=document.getElementById('tbody');
-  tb.innerHTML="";
-  // reuse render logic but with expanded
-  render(rows);
-}
-// initial + poll
-let cachedRows=[];
-const originalRender=render;
-render=function(rows){ cachedRows=rows; originalRender(rows); };
 refreshOnce();
-setInterval(refreshOnce,2000);
-// try to show gateway label by probing a tiny checkout-less endpoint: we reuse the server log
-fetch('/v1/stats').then(()=>{}).catch(()=>{});
+setInterval(()=>{ if(!paused) refreshOnce(); },2000);
 </script>
 </body>
 </html>
