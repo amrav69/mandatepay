@@ -35,6 +35,11 @@ jobs:
           cargo install cargo-tarpaulin --locked
           cargo tarpaulin --out Xml --fail-under 0
 
+      - name: Audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
       - name: Attack suite against live server
         run: |
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
