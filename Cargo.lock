@@ -797,6 +797,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",

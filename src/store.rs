@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS nonces (
     nonce TEXT PRIMARY KEY,
     claimed_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS orders (
+    mandate_id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
 ";
 
 impl Db {
@@ -114,5 +120,30 @@ impl Db {
             reject,
             issued,
         })
+    }
+
+    pub fn get_cached_order(&self, mandate_id: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.0.lock().expect("order cache poisoned");
+        let mut stmt = conn.prepare("SELECT order_id FROM orders WHERE mandate_id = ?1")?;
+        let mut rows = stmt.query(params![mandate_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn cache_order(
+        &self,
+        mandate_id: &str,
+        order_id: &str,
+        amount: u64,
+    ) -> rusqlite::Result<()> {
+        let conn = self.0.lock().expect("order cache poisoned");
+        conn.execute(
+            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![mandate_id, order_id, amount as i64, unix_now() as i64],
+        )?;
+        Ok(())
     }
 }

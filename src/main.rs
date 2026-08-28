@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use mandatepay::{
+    auth::{extract_api_key, resolve_api_key, verify_api_key},
     error::AppError,
     gateway::Gateway,
     mandates::{self, Authority, Mandate},
@@ -23,6 +24,8 @@ struct AppState {
     db: Db,
     gateway: Gateway,
     allowed_merchants: Vec<String>,
+    api_key: String,
+    max_mandate_cap: u64,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +67,25 @@ fn parse_allowlist() -> Vec<String> {
         .collect()
 }
 
+fn parse_max_cap() -> u64 {
+    std::env::var("MANDATEPAY_MAX_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(100_000)
+}
+
+async fn require_api_key(
+    State(state): State<SharedState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, AppError> {
+    let provided = extract_api_key(req.headers());
+    match provided {
+        Some(k) if verify_api_key(&k, &state.api_key) => Ok(next.run(req).await),
+        _ => Err(AppError::Unauthorized("invalid or missing API key".into())),
+    }
+}
+
 async fn issue(
     State(state): State<SharedState>,
     Json(req): Json<IssueRequest>,
@@ -87,6 +109,12 @@ async fn issue(
         return Err(AppError::BadRequest(
             "max_amount_minor must be positive".into(),
         ));
+    }
+    if req.max_amount_minor > state.max_mandate_cap {
+        return Err(AppError::BadRequest(format!(
+            "max_amount_minor {} exceeds server cap {}",
+            req.max_amount_minor, state.max_mandate_cap
+        )));
     }
 
     let now = mandates::unix_now();
@@ -145,13 +173,24 @@ async fn checkout(
 
     let mut order_id = None;
     if matches!(decision, Decision::Allow { .. }) {
-        match state
-            .gateway
-            .create_order(&req.mandate, req.amount_minor)
-            .await
-        {
-            Ok(order) => order_id = Some(order.id),
-            Err(e) => reason = format!("{reason}; gateway: {e}"),
+        if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+            order_id = Some(cached);
+            reason = format!("{reason} (idempotent replay: cached order returned)");
+        } else {
+            match state
+                .gateway
+                .create_order(&req.mandate, req.amount_minor)
+                .await
+            {
+                Ok(order) => {
+                    let _ =
+                        state
+                            .db
+                            .cache_order(&req.mandate.mandate_id, &order.id, req.amount_minor);
+                    order_id = Some(order.id);
+                }
+                Err(e) => reason = format!("{reason}; gateway: {e}"),
+            }
         }
     }
 
@@ -218,20 +257,36 @@ async fn main() {
 
     let gateway = Gateway::from_env();
     let db = Db::open("mandatepay.db").expect("failed to open sqlite ledger");
+    let api_key = resolve_api_key();
+    let max_mandate_cap = parse_max_cap();
+    eprintln!(
+        "mandate cap: {} paise (₹{:.2})",
+        max_mandate_cap,
+        max_mandate_cap as f64 / 100.0
+    );
     let state = Arc::new(AppState {
         authority,
         db,
         gateway,
         allowed_merchants: parse_allowlist(),
+        api_key: api_key.clone(),
+        max_mandate_cap,
     });
+
+    let protected = Router::new()
+        .route("/v1/mandates", post(issue))
+        .route("/v1/checkout", post(checkout))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ));
 
     let app = Router::new()
         .route("/", get(dashboard))
         .route("/health", get(health))
-        .route("/v1/mandates", post(issue))
-        .route("/v1/checkout", post(checkout))
         .route("/v1/decisions", get(list_decisions))
         .route("/v1/stats", get(ledger_stats))
+        .merge(protected)
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));

@@ -127,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("AGENT_BUDGET_MINOR must be an integer");
 
     let api_key = std::env::var("LLM_API_KEY").unwrap_or_default();
+    let gov_key = std::env::var("MANDATEPAY_API_KEY").unwrap_or_default();
     let http = reqwest::Client::new();
 
     println!("[agent] goal: {goal}");
@@ -166,34 +167,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let issued: IssuedResponse = http
-        .post(format!("{server}/v1/mandates"))
-        .json(&json!({
-            "agent_id": agent_id,
-            "merchant_id": proposal.merchant_id,
-            "currency": "INR",
-            "max_amount_minor": budget,
-            "ttl_secs": 600
-        }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let mut req = http.post(format!("{server}/v1/mandates")).json(&json!({
+        "agent_id": agent_id,
+        "merchant_id": proposal.merchant_id,
+        "currency": "INR",
+        "max_amount_minor": budget,
+        "ttl_secs": 600
+    }));
+    if !gov_key.is_empty() {
+        req = req.header("X-API-Key", &gov_key);
+    }
+    let issued: IssuedResponse = req.send().await?.error_for_status()?.json().await?;
     println!("[agent] mandate issued: {}", issued.mandate["mandate_id"]);
 
-    let decision: CheckoutResponse = http
-        .post(format!("{server}/v1/checkout"))
-        .json(&json!({
-            "mandate": issued.mandate,
-            "signature": issued.signature,
-            "amount_minor": proposal.amount_minor
-        }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let mut req = http.post(format!("{server}/v1/checkout")).json(&json!({
+        "mandate": issued.mandate,
+        "signature": issued.signature,
+        "amount_minor": proposal.amount_minor
+    }));
+    if !gov_key.is_empty() {
+        req = req.header("X-API-Key", &gov_key);
+    }
+    let decision: CheckoutResponse = req.send().await?.error_for_status()?.json().await?;
 
     println!("[agent] decision: {}", decision.decision);
     println!("[agent] reason: {}", decision.reason);

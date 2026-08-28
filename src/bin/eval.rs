@@ -37,6 +37,19 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn gov_headers() -> reqwest::header::HeaderMap {
+    let mut h = reqwest::header::HeaderMap::new();
+    if let Ok(k) = std::env::var("MANDATEPAY_API_KEY")
+        && !k.trim().is_empty()
+    {
+        h.insert(
+            "X-API-Key",
+            reqwest::header::HeaderValue::from_str(k.trim()).unwrap(),
+        );
+    }
+    h
+}
+
 async fn checkout(
     http: &reqwest::Client,
     server: &str,
@@ -47,6 +60,7 @@ async fn checkout(
     let start = Instant::now();
     let resp = http
         .post(format!("{server}/v1/checkout"))
+        .headers(gov_headers())
         .json(&json!({
             "mandate": mandate,
             "signature": signature,
@@ -62,6 +76,7 @@ async fn checkout(
 async fn issue_via_api(http: &reqwest::Client, server: &str) -> (Value, String) {
     let resp: Value = http
         .post(format!("{server}/v1/mandates"))
+        .headers(gov_headers())
         .json(&json!({
             "agent_id": "eval-attacker",
             "merchant_id": "merchant-001",
