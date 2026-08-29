@@ -339,6 +339,17 @@ pub async fn chain_verify(
     Ok(Json(json!({"chain_valid": ok})))
 }
 
+pub async fn get_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let policy = state
+        .db
+        .get_or_create_agent(&id)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!(policy)))
+}
+
 pub async fn dashboard() -> impl IntoResponse {
     let html = include_str!("../dashboard/index.html");
     Html(html)
@@ -348,6 +359,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
+        .route("/v1/agents/{id}", get(get_agent))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

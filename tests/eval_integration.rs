@@ -173,3 +173,46 @@ async fn verify_endpoint_validates_signature() {
     .unwrap();
     assert_eq!(body["valid"], true);
 }
+
+#[tokio::test]
+async fn get_agent_returns_policy() {
+    let (app, key) = test_app();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents/test-agent-xyz")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["agent_id"], "test-agent-xyz");
+    assert_eq!(body["max_cap"], 50000);
+    assert_eq!(body["velocity_limit"], 50);
+}
+
+#[tokio::test]
+async fn get_agent_requires_auth() {
+    let (app, _) = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents/test-agent-xyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
