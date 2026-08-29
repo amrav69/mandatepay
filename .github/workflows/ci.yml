@@ -38,6 +38,11 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
+      - name: Deny
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check
+
       - name: Attack suite against live server
         run: |
           export CI_SEED=$(openssl rand -base64 32)
