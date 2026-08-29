@@ -353,4 +353,41 @@ impl Db {
             Ok(None)
         }
     }
+
+    pub fn update_agent(
+        &self,
+        agent_id: &str,
+        max_cap: Option<u64>,
+        velocity_limit: Option<u32>,
+        velocity_window_secs: Option<u64>,
+        allowed_merchants: Option<Vec<String>>,
+    ) -> rusqlite::Result<AgentPolicy> {
+        let mut policy = self.get_or_create_agent(agent_id)?;
+        if let Some(v) = max_cap {
+            policy.max_cap = v;
+        }
+        if let Some(v) = velocity_limit {
+            policy.velocity_limit = v;
+        }
+        if let Some(v) = velocity_window_secs {
+            policy.velocity_window_secs = v;
+        }
+        if let Some(v) = allowed_merchants {
+            policy.allowed_merchants = v;
+        }
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let merchants = policy.allowed_merchants.join(",");
+        conn.execute(
+            "UPDATE agents SET max_cap = ?1, velocity_limit = ?2, velocity_window_secs = ?3, allowed_merchants = ?4, updated_at = ?5 WHERE agent_id = ?6",
+            params![
+                policy.max_cap as i64,
+                policy.velocity_limit as i64,
+                policy.velocity_window_secs as i64,
+                merchants,
+                unix_now() as i64,
+                agent_id
+            ],
+        )?;
+        Ok(policy)
+    }
 }

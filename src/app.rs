@@ -350,6 +350,44 @@ pub async fn get_agent(
     Ok(Json(json!(policy)))
 }
 
+#[derive(Deserialize)]
+pub struct UpdateAgentRequest {
+    pub max_cap: Option<u64>,
+    pub velocity_limit: Option<u32>,
+    pub velocity_window_secs: Option<u64>,
+    pub allowed_merchants: Option<Vec<String>>,
+}
+
+pub async fn update_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateAgentRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(v) = req.max_cap
+        && v == 0
+    {
+        return Err(AppError::BadRequest("max_cap must be positive".into()));
+    }
+    if let Some(v) = req.velocity_limit
+        && v == 0
+    {
+        return Err(AppError::BadRequest(
+            "velocity_limit must be positive".into(),
+        ));
+    }
+    let policy = state
+        .db
+        .update_agent(
+            &id,
+            req.max_cap,
+            req.velocity_limit,
+            req.velocity_window_secs,
+            req.allowed_merchants,
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!(policy)))
+}
+
 pub async fn dashboard() -> impl IntoResponse {
     let html = include_str!("../dashboard/index.html");
     Html(html)
@@ -359,7 +397,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
-        .route("/v1/agents/{id}", get(get_agent))
+        .route("/v1/agents/{id}", get(get_agent).patch(update_agent))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

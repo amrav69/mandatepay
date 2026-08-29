@@ -216,3 +216,57 @@ async fn get_agent_requires_auth() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn patch_agent_updates_policy() {
+    let (app, key) = test_app();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/agents/patch-agent-1")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "max_cap": 99999,
+                        "velocity_limit": 10,
+                        "allowed_merchants": ["merchant-001", "merchant-002"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["max_cap"], 99999);
+    assert_eq!(body["velocity_limit"], 10);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents/patch-agent-1")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["max_cap"], 99999);
+}
