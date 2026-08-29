@@ -421,7 +421,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
-        .route("/v1/agents", get(list_agents))
         .route(
             "/v1/agents/{id}",
             get(get_agent).patch(update_agent).delete(delete_agent),
@@ -440,6 +439,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/verify", post(verify_mandate))
         .route("/v1/chain/verify", get(chain_verify))
         .route("/v1/stats", get(ledger_stats))
+        .route("/v1/agents", get(list_agents))
         .merge(protected)
         .with_state(state)
 }
