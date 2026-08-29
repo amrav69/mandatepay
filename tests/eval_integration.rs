@@ -362,6 +362,66 @@ async fn delete_agent_removes_policy() {
 }
 
 #[tokio::test]
+async fn list_agents_pagination() {
+    let (app, key) = test_app();
+    for id in ["pag-a", "pag-b", "pag-c"] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/agents/{id}"))
+                    .header("x-api-key", &key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents?limit=1&offset=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["agents"].as_array().unwrap().len(), 1);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents?limit=1&offset=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body2: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(
+        body["agents"][0]["agent_id"],
+        body2["agents"][0]["agent_id"]
+    );
+}
+
+#[tokio::test]
 async fn chain_verify_true_after_writes() {
     let (app, key) = test_app();
     for _ in 0..2 {
