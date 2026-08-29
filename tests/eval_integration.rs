@@ -270,3 +270,43 @@ async fn patch_agent_updates_policy() {
     .unwrap();
     assert_eq!(body["max_cap"], 99999);
 }
+
+#[tokio::test]
+async fn list_agents_returns_all() {
+    let (app, key) = test_app();
+    for id in ["list-a", "list-b"] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/agents/{id}"))
+                    .header("x-api-key", &key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let agents = body["agents"].as_array().unwrap();
+    assert!(agents.iter().any(|a| a["agent_id"] == "list-a"));
+    assert!(agents.iter().any(|a| a["agent_id"] == "list-b"));
+}

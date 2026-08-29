@@ -350,6 +350,16 @@ pub async fn get_agent(
     Ok(Json(json!(policy)))
 }
 
+pub async fn list_agents(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let agents = state
+        .db
+        .list_agents()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "agents": agents })))
+}
+
 #[derive(Deserialize)]
 pub struct UpdateAgentRequest {
     pub max_cap: Option<u64>,
@@ -397,6 +407,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
+        .route("/v1/agents", get(list_agents))
         .route("/v1/agents/{id}", get(get_agent).patch(update_agent))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

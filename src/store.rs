@@ -390,4 +390,26 @@ impl Db {
         )?;
         Ok(policy)
     }
+
+    pub fn list_agents(&self) -> rusqlite::Result<Vec<AgentPolicy>> {
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY agent_id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let merchants: String = row.get(4)?;
+            Ok(AgentPolicy {
+                agent_id: row.get(0)?,
+                max_cap: row.get::<_, i64>(1)? as u64,
+                velocity_limit: row.get::<_, i64>(2)? as u32,
+                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                allowed_merchants: merchants
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            })
+        })?;
+        rows.collect()
+    }
 }
