@@ -185,6 +185,7 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
     <div class="pills">
       <span class="pill pill-live"><span id="liveDot" class="dot"></span>Live</span>
       <span class="pill" id="gatewayPill">gateway: —</span>
+      <span class="pill" id="chainPill">chain: —</span>
       <span class="pill">TRACK 01 · Agentic Commerce</span>
     </div>
   </header>
@@ -264,9 +265,10 @@ let cachedRows=[];
 async function refreshOnce(){
   const status=document.getElementById('status');
   try{
-    const [dRes,sRes]=await Promise.all([
+    const [dRes,sRes,cRes]=await Promise.all([
       fetchJSON('/v1/decisions?limit='+currentLimit),
-      fetchJSON('/v1/stats')
+      fetchJSON('/v1/stats'),
+      fetchJSON('/v1/chain/verify').catch(()=>({chain_valid:false}))
     ]);
     const rows=dRes.decisions||[];
     cachedRows=rows;
@@ -275,6 +277,11 @@ async function refreshOnce(){
     document.getElementById('sReject').textContent=sRes.reject??0;
     document.getElementById('sIssued').textContent=sRes.issued??0;
     document.getElementById('gatewayPill').textContent = (rows.length && sRes.total) ? "gateway: razorpay-test · live" : "gateway: mock";
+    const chainEl=document.getElementById('chainPill');
+    chainEl.textContent = cRes.chain_valid ? "chain: valid ✓" : "chain: —";
+    chainEl.style.color = cRes.chain_valid ? "#a7f3ce" : "#c2d0e6";
+    chainEl.style.borderColor = cRes.chain_valid ? "rgba(29,214,122,0.30)" : "rgba(255,255,255,0.12)";
+    chainEl.style.background = cRes.chain_valid ? "rgba(29,214,122,0.14)" : "rgba(255,255,255,0.06)";
     status.textContent="updated "+new Date().toLocaleTimeString()+" · "+rows.length+" rows";
     status.style.color="#8ea0bb";
     render(rows);

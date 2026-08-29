@@ -360,3 +360,51 @@ async fn delete_agent_removes_policy() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn chain_verify_true_after_writes() {
+    let (app, key) = test_app();
+    for _ in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/mandates")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &key)
+                    .body(Body::from(
+                        json!({
+                            "agent_id": "chain-test",
+                            "merchant_id": "merchant-001",
+                            "currency": "INR",
+                            "max_amount_minor": 10000,
+                            "ttl_secs": 600
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/chain/verify")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["chain_valid"], true);
+}
