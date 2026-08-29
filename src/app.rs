@@ -398,6 +398,20 @@ pub async fn update_agent(
     Ok(Json(json!(policy)))
 }
 
+pub async fn delete_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let deleted = state
+        .db
+        .delete_agent(&id)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if !deleted {
+        return Err(AppError::BadRequest(format!("agent {id} not found")));
+    }
+    Ok(Json(json!({"deleted": id})))
+}
+
 pub async fn dashboard() -> impl IntoResponse {
     let html = include_str!("../dashboard/index.html");
     Html(html)
@@ -408,7 +422,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
         .route("/v1/agents", get(list_agents))
-        .route("/v1/agents/{id}", get(get_agent).patch(update_agent))
+        .route(
+            "/v1/agents/{id}",
+            get(get_agent).patch(update_agent).delete(delete_agent),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

@@ -310,3 +310,53 @@ async fn list_agents_returns_all() {
     assert!(agents.iter().any(|a| a["agent_id"] == "list-a"));
     assert!(agents.iter().any(|a| a["agent_id"] == "list-b"));
 }
+
+#[tokio::test]
+async fn delete_agent_removes_policy() {
+    let (app, key) = test_app();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents/delete-me")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/agents/delete-me")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["deleted"], "delete-me");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/v1/agents/delete-me")
+                .header("x-api-key", &key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

@@ -412,4 +412,14 @@ impl Db {
         })?;
         rows.collect()
     }
+
+    pub fn delete_agent(&self, agent_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let changed = conn.execute("DELETE FROM agents WHERE agent_id = ?1", params![agent_id])?;
+        conn.execute(
+            "DELETE FROM agent_velocity WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        Ok(changed > 0)
+    }
 }
