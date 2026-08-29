@@ -6,8 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CI_SEED: bk6N03RyzsSo4jj2Eg/X2yirn/FNbJuc+Q2hW37kdTQ=
-  CI_API_KEY: ci-test-key-please-change-in-production-32b
 
 jobs:
   test:
@@ -42,6 +40,8 @@ jobs:
 
       - name: Attack suite against live server
         run: |
+          export CI_SEED=$(openssl rand -base64 32)
+          export CI_API_KEY=$(openssl rand -base64 32)
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
           sleep 5
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin eval
