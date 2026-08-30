@@ -362,6 +362,50 @@ async fn delete_agent_removes_policy() {
 }
 
 #[tokio::test]
+async fn list_agents_search() {
+    let (app, key) = test_app();
+    for id in ["search-foo-1", "search-foo-2", "search-bar-1"] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/v1/agents/{id}"))
+                    .header("x-api-key", &key)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents?q=foo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let agents = body["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 2);
+    assert!(
+        agents
+            .iter()
+            .all(|a| a["agent_id"].as_str().unwrap().contains("foo"))
+    );
+}
+
+#[tokio::test]
 async fn create_agent_explicit() {
     let (app, key) = test_app();
     let resp = app

@@ -354,6 +354,7 @@ pub async fn get_agent(
 pub struct AgentListParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub q: Option<String>,
 }
 
 pub async fn list_agents(
@@ -362,10 +363,19 @@ pub async fn list_agents(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
     let offset = params.offset.unwrap_or(0).max(0);
-    let agents = state
+    let mut agents = state
         .db
         .list_agents_paginated(limit, offset)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if let Some(q) = params
+        .q
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        let needle = q.to_lowercase();
+        agents.retain(|a| a.agent_id.to_lowercase().contains(&needle));
+    }
     Ok(Json(json!({ "agents": agents })))
 }
 
