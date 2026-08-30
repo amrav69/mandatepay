@@ -362,6 +362,54 @@ async fn delete_agent_removes_policy() {
 }
 
 #[tokio::test]
+async fn create_agent_explicit() {
+    let (app, key) = test_app();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "create-me",
+                        "max_cap": 77777,
+                        "velocity_limit": 7
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["agent_id"], "create-me");
+    assert_eq!(body["max_cap"], 77777);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(json!({"agent_id": "create-me"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn list_agents_pagination() {
     let (app, key) = test_app();
     for id in ["pag-a", "pag-b", "pag-c"] {
