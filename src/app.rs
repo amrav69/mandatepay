@@ -285,7 +285,7 @@ pub async fn get_decision(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     match row {
         Some(r) => Ok(Json(json!(r))),
-        None => Err(AppError::BadRequest(format!("decision {id} not found"))),
+        None => Err(AppError::NotFound(format!("decision {id} not found"))),
     }
 }
 
@@ -297,7 +297,7 @@ pub async fn verify_decision(
         .db
         .get_decision(id)
         .map_err(|e| AppError::Internal(e.to_string()))?
-        .ok_or_else(|| AppError::BadRequest(format!("decision {id} not found")))?;
+        .ok_or_else(|| AppError::NotFound(format!("decision {id} not found")))?;
     let chain_ok = state
         .db
         .verify_chain()
@@ -426,7 +426,7 @@ pub async fn delete_agent(
         .delete_agent(&id)
         .map_err(|e| AppError::Internal(e.to_string()))?;
     if !deleted {
-        return Err(AppError::BadRequest(format!("agent {id} not found")));
+        return Err(AppError::NotFound(format!("agent {id} not found")));
     }
     Ok(Json(json!({"deleted": id})))
 }
