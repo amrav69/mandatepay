@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS agents (
     max_cap INTEGER NOT NULL DEFAULT 50000,
     velocity_limit INTEGER NOT NULL DEFAULT 50,
     velocity_window_secs INTEGER NOT NULL DEFAULT 60,
-    allowed_merchants TEXT NOT NULL DEFAULT 'merchant-001',
+    allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -280,17 +280,17 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: merchants
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect(),
+                    .collect()),
             })
         } else {
             let now = unix_now();
             conn.execute(
                 "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
-                 VALUES (?1, 50000, 50, 60, 'merchant-001', ?2, ?2)",
+                 VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
                 params![agent_id, now as i64],
             )?;
             Ok(AgentPolicy {
@@ -308,7 +308,7 @@ impl Db {
         let now = unix_now();
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
-             VALUES (?1, 50000, 50, 60, 'merchant-001', ?2, ?2)",
+             VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
             params![agent_id, now as i64],
         )?;
         let (velocity_limit, velocity_window_secs): (i64, i64) = conn.query_row(
@@ -343,11 +343,11 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: merchants
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect(),
+                    .collect()),
             }))
         } else {
             Ok(None)
@@ -376,7 +376,7 @@ impl Db {
             policy.allowed_merchants = v;
         }
         let conn = self.0.lock().expect("agent policy poisoned");
-        let merchants = policy.allowed_merchants.join(",");
+        let merchants = serde_json::to_string(&policy.allowed_merchants).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "UPDATE agents SET max_cap = ?1, velocity_limit = ?2, velocity_window_secs = ?3, allowed_merchants = ?4, updated_at = ?5 WHERE agent_id = ?6",
             params![
@@ -403,11 +403,11 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: merchants
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect(),
+                    .collect()),
             })
         })?;
         rows.collect()
@@ -439,11 +439,11 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: merchants
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect(),
+                    .collect()),
             })
         })?;
         rows.collect()
