@@ -1,7 +1,9 @@
+mod vectors;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use mandatepay::mandates::{Authority, Mandate, unix_now};
+use mandatepay::mandates::Authority;
 use serde_json::{Value, json};
 use std::time::Instant;
+use vectors::locally_signed;
 
 struct AttackResult {
     name: &'static str,
@@ -96,32 +98,6 @@ async fn issue_via_api(http: &reqwest::Client, server: &str) -> (Value, String) 
         resp["mandate"].clone(),
         resp["signature"].as_str().unwrap().to_string(),
     )
-}
-
-fn locally_signed(
-    auth: &Authority,
-    nonce: &str,
-    merchant: &str,
-    action: &str,
-    version: u8,
-    issued_offset_secs: i64,
-    expires_offset_secs: i64,
-) -> (Value, String) {
-    let now = unix_now() as i64;
-    let m = Mandate {
-        version,
-        mandate_id: format!("mnd_eval_{nonce}"),
-        agent_id: "eval-attacker".into(),
-        merchant_id: merchant.into(),
-        action: action.into(),
-        currency: "INR".into(),
-        max_amount_minor: 49_900,
-        issued_at: (now + issued_offset_secs) as u64,
-        expires_at: (now + expires_offset_secs) as u64,
-        nonce: format!("n_eval_{nonce}"),
-    };
-    let sig = auth.sign(&m).expect("local signing failed");
-    (serde_json::to_value(&m).unwrap(), sig)
 }
 
 async fn run_attack(
