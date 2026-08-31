@@ -1,8 +1,13 @@
 # MandatePay
 
-[![CI](https://github.com/amrav69/mandatepay/actions/workflows/ci.yml/badge.svg)](https://github.com/amrav69/mandatepay/actions/workflows/ci.yml) [![Rust](https://img.shields.io/badge/rust-stable-orange)](https://www.rust-lang.org) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<div align="center">
+<img src="./mandate_card.svg" alt="MandatePay verification terminal" width="720"/>
+</div>
+
+[![CI](https://github.com/amrav69/mandatepay/actions/workflows/ci.yml/badge.svg)](https://github.com/amrav69/mandatepay/actions/workflows/ci.yml) [![Rust](https://img.shields.io/badge/rust-stable-CE422B?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) ![Ed25519](https://img.shields.io/badge/crypto-Ed25519-00D9FF?style=flat) ![SQLite](https://img.shields.io/badge/store-SQLite-003B57?style=flat&logo=sqlite&logoColor=white) ![Razorpay](https://img.shields.io/badge/gateway-Razorpay-02042B?style=flat)
 
 **Signed payment mandates for AI agents — Ed25519 intent mandates with spend caps, expiry & replay protection, verified before any Razorpay order.**
+
 
 > AI agents can now act while you sleep with live API keys. Valid credentials ≠ valid payment. MandatePay is the cheque book: every money action needs a bounded, single-use, signed mandate first.
 
