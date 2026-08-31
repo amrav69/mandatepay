@@ -1,8 +1,8 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use mandatepay::{
     app::{AppState, build_router},
     gateway::Gateway,

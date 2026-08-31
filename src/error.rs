@@ -34,4 +34,3 @@ impl IntoResponse for AppError {
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }
 }
-

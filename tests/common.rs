@@ -27,4 +27,3 @@ pub fn test_app() -> (axum::Router, String) {
     });
     (build_router(state), api_key)
 }
-
