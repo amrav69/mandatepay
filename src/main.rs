@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{net::SocketAddr, sync::Arc};
 
 use mandatepay::{
