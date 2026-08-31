@@ -1,0 +1,17 @@
+services:
+  mandatepay:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - MANDATEPAY_SEED=${MANDATEPAY_SEED:-}
+      - MANDATEPAY_API_KEY=${MANDATEPAY_API_KEY:-}
+      - MANDATEPAY_MAX_CAP=100000
+      - RUST_LOG=info
+    volumes:
+      - mandatepay-data:/app/data
+    working_dir: /app/data
+    command: /usr/local/bin/mandatepay
+
+volumes:
+  mandatepay-data:

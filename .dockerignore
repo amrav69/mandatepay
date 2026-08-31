@@ -1,0 +1,4 @@
+target/
+.env
+mandatepay.db
+.git/
