@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use mandatepay::{
     app::{AppState, build_router},
     gateway::Gateway,
@@ -6,10 +7,16 @@ use mandatepay::{
 };
 use std::sync::Arc;
 
+fn random_key() -> String {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw).expect("os randomness");
+    B64.encode(raw)
+}
+
 #[tokio::test]
 async fn app_boots_with_rust_log_info() {
     unsafe { std::env::set_var("RUST_LOG", "info") };
-    let api_key = "test-logging-key".to_string();
+    let api_key = random_key();
     let authority = Authority::from_seed([1u8; 32]);
     let db = Db::open(":memory:").unwrap();
     let state = Arc::new(AppState {
@@ -32,7 +39,7 @@ async fn metrics_endpoint_returns_counters() {
     use serde_json::Value;
     use tower::util::ServiceExt;
 
-    let api_key = "metrics-test-key".to_string();
+    let api_key = random_key();
     let authority = Authority::from_seed([2u8; 32]);
     let db = Db::open(":memory:").unwrap();
     db.record_decision("/v1/mandates", "ISSUED", "test", "{}")

@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -12,10 +13,16 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tower::util::ServiceExt;
 
+fn random_key() -> String {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw).expect("os randomness");
+    B64.encode(raw)
+}
+
 #[tokio::test]
 async fn fresh_clone_no_env_still_builds_and_tests() {
     // Simulate a fresh clone with no .env — no env vars set, in-memory DB, Mock gateway
-    let api_key = "fresh-clone-key".to_string();
+    let api_key = random_key();
     let authority = Authority::from_seed([42u8; 32]);
     let db = Db::open(":memory:").expect("in-memory db must open without any env");
     let gateway = Gateway::Mock;
@@ -76,7 +83,7 @@ async fn fresh_clone_no_env_still_builds_and_tests() {
 
 #[tokio::test]
 async fn fresh_clone_chain_verify_without_env() {
-    let api_key = "fresh-clone-key-2".to_string();
+    let api_key = random_key();
     let authority = Authority::from_seed([99u8; 32]);
     let db = Db::open(":memory:").unwrap();
     let state = Arc::new(AppState {
