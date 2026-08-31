@@ -504,6 +504,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/verify", post(verify_mandate))
         .route("/v1/chain/verify", get(chain_verify))
         .route("/v1/stats", get(ledger_stats))
+        .route("/v1/metrics", get(ledger_stats))
         .route("/v1/agents", get(list_agents))
         .merge(protected)
         .with_state(state)
