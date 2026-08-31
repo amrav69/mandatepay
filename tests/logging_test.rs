@@ -20,8 +20,7 @@ async fn app_boots_with_rust_log_info() {
         max_mandate_cap: 100_000,
     });
     let _app = build_router(state);
-    // If we reach here without panic, the subscriber init in main.rs would not have poisoned the test
-    assert!(true);
+    drop(_app);
 }
 
 #[tokio::test]

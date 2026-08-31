@@ -362,6 +362,57 @@ async fn delete_agent_removes_policy() {
 }
 
 #[tokio::test]
+async fn issue_rejects_invalid_ttl_and_currency() {
+    let (app, key) = test_app();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "a",
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 1000,
+                        "ttl_secs": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "a",
+                        "merchant_id": "merchant-001",
+                        "currency": "USD",
+                        "max_amount_minor": 1000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn list_agents_search() {
     let (app, key) = test_app();
     for id in ["search-foo-1", "search-foo-2", "search-bar-1"] {

@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use validator::Validate;
 
 use crate::{
     auth::{extract_api_key, verify_api_key},
@@ -26,12 +27,21 @@ pub struct AppState {
     pub max_mandate_cap: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 pub struct IssueRequest {
+    #[validate(length(min = 1, message = "agent_id required"))]
     pub agent_id: String,
+    #[validate(length(min = 1, message = "merchant_id required"))]
     pub merchant_id: String,
+    #[validate(length(equal = 3, message = "currency must be 3 chars"))]
     pub currency: String,
+    #[validate(range(min = 1, message = "max_amount_minor must be positive"))]
     pub max_amount_minor: u64,
+    #[validate(range(
+        min = 60,
+        max = 86400,
+        message = "ttl_secs must be between 60 and 86400"
+    ))]
     pub ttl_secs: u64,
 }
 
@@ -41,10 +51,11 @@ pub struct Issued {
     pub signature: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate)]
 pub struct CheckoutRequest {
     pub mandate: Mandate,
     pub signature: String,
+    #[validate(range(min = 1, message = "amount_minor must be positive"))]
     pub amount_minor: u64,
 }
 
@@ -88,24 +99,11 @@ pub async fn issue(
     State(state): State<Arc<AppState>>,
     Json(req): Json<IssueRequest>,
 ) -> Result<Json<Issued>, AppError> {
-    if req.agent_id.trim().is_empty() || req.merchant_id.trim().is_empty() {
-        return Err(AppError::BadRequest(
-            "agent_id and merchant_id are required".into(),
-        ));
-    }
-    if !(60..=86_400).contains(&req.ttl_secs) {
-        return Err(AppError::BadRequest(
-            "ttl_secs must be between 60 and 86400".into(),
-        ));
-    }
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
     if req.currency != "INR" {
         return Err(AppError::BadRequest(
             "only INR mandates are supported".into(),
-        ));
-    }
-    if req.max_amount_minor == 0 {
-        return Err(AppError::BadRequest(
-            "max_amount_minor must be positive".into(),
         ));
     }
     if req.max_amount_minor > state.max_mandate_cap {
@@ -155,6 +153,8 @@ pub async fn checkout(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<Json<DecisionResponse>, AppError> {
+    req.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let agent_id = req.mandate.agent_id.trim();
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
