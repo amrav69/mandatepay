@@ -182,12 +182,10 @@ pub async fn checkout(
         &state.db,
     );
 
-    if matches!(decision, Decision::Allow { .. }) {
-        if !state.db.check_velocity(agent_id)? {
-            decision = Decision::Reject {
-                reason: format!("velocity limit exceeded for agent {}", agent_id),
-            };
-        }
+    if matches!(decision, Decision::Allow { .. }) && !state.db.check_velocity(agent_id)? {
+        decision = Decision::Reject {
+            reason: format!("velocity limit exceeded for agent {}", agent_id),
+        };
     }
 
     let (label, mut reason) = match &decision {

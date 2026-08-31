@@ -280,11 +280,13 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()),
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                    merchants
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }),
             })
         } else {
             let now = unix_now();
@@ -343,11 +345,13 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()),
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                    merchants
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }),
             }))
         } else {
             Ok(None)
@@ -376,7 +380,8 @@ impl Db {
             policy.allowed_merchants = v;
         }
         let conn = self.0.lock().expect("agent policy poisoned");
-        let merchants = serde_json::to_string(&policy.allowed_merchants).unwrap_or_else(|_| "[]".to_string());
+        let merchants =
+            serde_json::to_string(&policy.allowed_merchants).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "UPDATE agents SET max_cap = ?1, velocity_limit = ?2, velocity_window_secs = ?3, allowed_merchants = ?4, updated_at = ?5 WHERE agent_id = ?6",
             params![
@@ -403,11 +408,13 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()),
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                    merchants
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }),
             })
         })?;
         rows.collect()
@@ -439,11 +446,13 @@ impl Db {
                 max_cap: row.get::<_, i64>(1)? as u64,
                 velocity_limit: row.get::<_, i64>(2)? as u32,
                 velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| merchants
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()),
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                    merchants
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }),
             })
         })?;
         rows.collect()
