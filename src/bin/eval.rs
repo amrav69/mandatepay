@@ -136,7 +136,7 @@ async fn run_attack(
         .or(body["error"].as_str())
         .unwrap_or("no reason given")
         .to_string();
-    let rejected = decision == "REJECT";
+    let rejected = decision == "REJECT" || decision.starts_with("HTTP-ERROR");
     AttackResult {
         name,
         vector,
