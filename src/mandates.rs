@@ -29,7 +29,14 @@ pub struct Mandate {
 }
 
 pub fn canonical_bytes(mandate: &Mandate) -> Result<Vec<u8>, VerifyError> {
-    serde_json::to_vec(mandate).map_err(|e| VerifyError::Canonicalization(e.to_string()))
+    let mut out = Vec::with_capacity(256);
+    out.extend_from_slice(b"mandatepay.v1.");
+    let value =
+        serde_json::to_value(mandate).map_err(|e| VerifyError::Canonicalization(e.to_string()))?;
+    let canon =
+        serde_jcs::to_vec(&value).map_err(|e| VerifyError::Canonicalization(e.to_string()))?;
+    out.extend_from_slice(&canon);
+    Ok(out)
 }
 
 pub fn unix_now() -> u64 {

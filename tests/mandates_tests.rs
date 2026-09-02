@@ -151,3 +151,17 @@ fn replayed_nonce_rejected_second_time() {
         "second evaluation must be rejected as replay"
     );
 }
+
+#[test]
+fn canonical_bytes_is_jcs_with_domain_separator() {
+    use mandatepay::mandates::canonical_bytes;
+    let m = sample_mandate("n_canonical");
+    let b1 = canonical_bytes(&m).unwrap();
+    let b2 = canonical_bytes(&m).unwrap();
+    assert_eq!(b1, b2);
+    assert!(b1.starts_with(b"mandatepay.v1."));
+    let json_part = &b1[b"mandatepay.v1.".len()..];
+    let v: serde_json::Value = serde_json::from_slice(json_part).unwrap();
+    let jcs = serde_jcs::to_vec(&v).unwrap();
+    assert_eq!(json_part, jcs.as_slice());
+}

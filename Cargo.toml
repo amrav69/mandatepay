@@ -14,6 +14,7 @@ hex = "0.4.3"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_jcs = "0.2.0"
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
