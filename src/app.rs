@@ -275,6 +275,7 @@ pub async fn checkout(
                     order_id = Some(order.id);
                 }
                 Err(e) => {
+                    let _ = state.db.rollback_nonce(&req.mandate.nonce);
                     reason = format!("{reason}; gateway: {e}");
                     label = "REJECT";
                 }

@@ -128,6 +128,12 @@ impl Db {
         Ok(changed > 0)
     }
 
+    pub fn rollback_nonce(&self, nonce: &str) -> rusqlite::Result<()> {
+        let conn = self.0.lock().expect("nonce ledger poisoned");
+        conn.execute("DELETE FROM nonces WHERE nonce = ?1", params![nonce])?;
+        Ok(())
+    }
+
     pub fn list_recent(&self, limit: i64) -> rusqlite::Result<Vec<DecisionRow>> {
         let conn = self.0.lock().expect("decision ledger poisoned");
         let mut stmt = conn.prepare(

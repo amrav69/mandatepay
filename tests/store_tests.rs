@@ -31,6 +31,16 @@ fn agent_crud_and_velocity() {
 }
 
 #[test]
+fn rollback_nonce_allows_retry() {
+    let db = Db::open(":memory:").unwrap();
+    let nonce = "n_test_rollback";
+    assert!(db.try_claim_nonce(nonce).unwrap());
+    assert!(!db.try_claim_nonce(nonce).unwrap());
+    db.rollback_nonce(nonce).unwrap();
+    assert!(db.try_claim_nonce(nonce).unwrap());
+}
+
+#[test]
 fn list_and_delete_agents() {
     let db = Db::open(":memory:").unwrap();
     db.get_or_create_agent("list-a").unwrap();
