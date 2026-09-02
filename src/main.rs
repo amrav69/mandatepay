@@ -10,13 +10,13 @@ use mandatepay::{
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    dotenvy::dotenv().ok();
 
     let authority = Authority::from_seed(mandates::load_seed());
     tracing::info!(authority_key = %authority.public_key_b64(), "authority public key");

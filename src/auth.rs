@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 pub fn resolve_api_key() -> String {
@@ -10,7 +11,8 @@ pub fn resolve_api_key() -> String {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).expect("os randomness unavailable");
     let k = B64.encode(raw);
-    tracing::warn!(ephemeral_key = %k, "MANDATEPAY_API_KEY not set — generated ephemeral key; set in .env to persist");
+    let hash = hex::encode(Sha256::digest(k.as_bytes()));
+    tracing::warn!(ephemeral_key_hash = %hash[..16], "MANDATEPAY_API_KEY not set — generated ephemeral key; set in .env to persist");
     k
 }
 

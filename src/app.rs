@@ -251,7 +251,7 @@ pub async fn checkout(
         };
     }
 
-    let (label, mut reason) = match &decision {
+    let (mut label, mut reason) = match &decision {
         Decision::Allow { reason } => ("ALLOW", reason.clone()),
         Decision::Reject { reason } => ("REJECT", reason.clone()),
     };
@@ -274,7 +274,10 @@ pub async fn checkout(
                             .cache_order(&req.mandate.mandate_id, &order.id, req.amount_minor);
                     order_id = Some(order.id);
                 }
-                Err(e) => reason = format!("{reason}; gateway: {e}"),
+                Err(e) => {
+                    reason = format!("{reason}; gateway: {e}");
+                    label = "REJECT";
+                }
             }
         }
     }
