@@ -171,6 +171,43 @@ pub async fn checkout(
         }
     });
 
+    if req.mandate.max_amount_minor > agent_policy.max_cap {
+        let reason = format!(
+            "mandate cap {} exceeds agent cap {}",
+            req.mandate.max_amount_minor, agent_policy.max_cap
+        );
+        state.db.record_decision(
+            "/v1/checkout",
+            "REJECT",
+            &reason,
+            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+        )?;
+        return Ok(Json(DecisionResponse {
+            decision: "REJECT".into(),
+            reason,
+            order_id: None,
+            gateway: state.gateway.label().into(),
+        }));
+    }
+    if req.amount_minor > agent_policy.max_cap {
+        let reason = format!(
+            "amount {} exceeds agent cap {}",
+            req.amount_minor, agent_policy.max_cap
+        );
+        state.db.record_decision(
+            "/v1/checkout",
+            "REJECT",
+            &reason,
+            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+        )?;
+        return Ok(Json(DecisionResponse {
+            decision: "REJECT".into(),
+            reason,
+            order_id: None,
+            gateway: state.gateway.label().into(),
+        }));
+    }
+
     let allowed_merchants = agent_policy.allowed_merchants.clone();
 
     let mut decision = policy::evaluate(

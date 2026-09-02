@@ -304,3 +304,86 @@ async fn get_agent_requires_auth() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn agent_cap_below_mandate_cap_rejects_checkout() {
+    let (app, key) = test_app();
+    let agent_id = "cap-test-agent";
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/agents/{agent_id}"))
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(json!({"max_cap": 1000}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": agent_id,
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 5000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mandate = body["mandate"].clone();
+    let sig = body["signature"].as_str().unwrap().to_string();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "mandate": mandate,
+                        "signature": sig,
+                        "amount_minor": 500
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["decision"], "REJECT");
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds agent cap")
+    );
+}
