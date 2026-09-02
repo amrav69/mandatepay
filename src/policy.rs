@@ -45,7 +45,7 @@ pub fn evaluate(
         return reject("mandate expired");
     }
 
-    if let Err(_) = authority.verify(mandate, signature_b64) {
+    if authority.verify(mandate, signature_b64).is_err() {
         return reject("invalid signature");
     }
 
