@@ -270,16 +270,26 @@ async function fetchJSON(url){
 function fmtTs(ts){ try{ return new Date(ts*1000).toLocaleString(); }catch{ return String(ts); } }
 function truncate(s,n){ return !s||s.length<=n ? (s||"") : s.slice(0,n-1)+"…"; }
 let agentQuery="";
+let agentSort = localStorage.getItem('MP_SORT_BY') || 'agent_id';
+let agentOrder = localStorage.getItem('MP_SORT_ORDER') || 'asc';
 document.getElementById('agentSearch')?.addEventListener('input', (e)=>{ agentQuery=e.target.value.trim(); refreshOnce(); });
+function toggleSort(field){
+  if(agentSort===field){ agentOrder = agentOrder==='asc'?'desc':'asc'; } else { agentSort=field; agentOrder='desc'; }
+  localStorage.setItem('MP_SORT_BY', agentSort);
+  localStorage.setItem('MP_SORT_ORDER', agentOrder);
+  refreshOnce();
+}
 let cachedRows=[];
 async function refreshOnce(){
   const status=document.getElementById('status');
   try{
+    const qPart = agentQuery ? 'q='+encodeURIComponent(agentQuery)+'&' : '';
+    const sortPart = `sort=${agentSort}&order=${agentOrder}&`;
     const [dRes,sRes,cRes,aRes]=await Promise.all([
       fetchJSON('/v1/decisions?limit='+currentLimit),
       fetchJSON('/v1/stats'),
       fetchJSON('/v1/chain/verify').catch(()=>({chain_valid:false})),
-      fetchJSON('/v1/agents' + (agentQuery ? '?q='+encodeURIComponent(agentQuery) : '')).catch(()=>({agents:[]}))
+      fetchJSON('/v1/agents?' + qPart + sortPart + 'limit=100').catch(()=>({agents:[]}))
     ]);
     const rows=dRes.decisions||[];
     cachedRows=rows;
@@ -314,7 +324,9 @@ function getApiKey(){
 function renderAgents(agents){
   const el=document.getElementById('agentsTable');
   if(!agents.length){ el.textContent="no agents yet — run an agent or eval to create one"; return; }
-  let html='<table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="color:#8ea0bb;text-align:left"><th style="padding:6px 8px">Agent</th><th style="padding:6px 8px">Cap</th><th style="padding:6px 8px">Velocity</th><th style="padding:6px 8px">Merchants</th><th style="padding:6px 8px">Actions</th></tr></thead><tbody>';
+  let sortBy = localStorage.getItem('MP_SORT_BY') || 'agent_id';
+  let sortOrder = localStorage.getItem('MP_SORT_ORDER') || 'asc';
+  let html='<table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="color:#8ea0bb;text-align:left"><th style="padding:6px 8px">Agent</th><th style="padding:6px 8px;cursor:pointer" onclick="toggleSort(\'max_cap\')">Cap '+(sortBy==='max_cap'?(sortOrder==='desc'?'▼':'▲'):'')+'</th><th style="padding:6px 8px;cursor:pointer" onclick="toggleSort(\'velocity_limit\')">Velocity '+(sortBy==='velocity_limit'?(sortOrder==='desc'?'▼':'▲'):'')+'</th><th style="padding:6px 8px">Merchants</th><th style="padding:6px 8px">Actions</th></tr></thead><tbody>';
   for(const a of agents.slice(0,12)){
     const safeId = escapeHtml(a.agent_id);
     html+=`<tr style="border-top:1px solid rgba(255,255,255,0.06)"><td style="padding:7px 8px" class="mono">${safeId}</td><td style="padding:7px 8px">₹${(a.max_cap/100).toFixed(0)}</td><td style="padding:7px 8px">${a.velocity_limit}/min</td><td style="padding:7px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escapeHtml((a.allowed_merchants||[]).join(", "))}</td><td style="padding:7px 8px;white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" data-cap="${a.max_cap}" data-vel="${a.velocity_limit}" onclick="editAgent(this.dataset.agentId, this.dataset.cap, this.dataset.vel)">Edit</button> <button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" onclick="deleteAgent(this.dataset.agentId)">Delete</button></td></tr>`;
