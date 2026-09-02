@@ -36,7 +36,7 @@
 | H9 | `src/gateway.rs:44` | Mock fallback silent when one key missing | **Fixed** `4f950fb` — `tracing::warn` + `GatewayError::NotConfigured` |
 | H10 | `src/app.rs:202` | Gateway error still `ALLOW` with `order_id=None` | **Fixed** `90dddcc` — now `REJECT` on gateway `Err` or `500` |
 | H11 | `src/main.rs:21` | `load_seed` ephemeral fallback → restart invalidates all mandates | **Fixed** — now `tracing::warn` + `MANDATEPAY_SEED` required in prod, `DEV_MODE` explicit |
-| H12 | `src/app.rs:433-467` | `create_agent` TOCTOU `if exists then update` | **Open** — `get_agent_policy` then `update_agent` still separate locks; needs `INSERT ... ON CONFLICT DO NOTHING` + check `row_count` atomically |
+| H12 | `src/app.rs:433-467` | `create_agent` TOCTOU `if exists then update` | **Fixed** `715595e` — `src/store.rs:410-440` `try_create_agent` atomic `INSERT OR IGNORE` + `changed>0` check, `src/app.rs:557-601` no separate `get_agent_policy` pre-check |
 
 ### Medium (19) — honesty/scale leaks
 
