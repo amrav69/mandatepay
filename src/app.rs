@@ -83,6 +83,8 @@ pub fn parse_max_cap() -> u64 {
         .unwrap_or(100_000)
 }
 
+/// Two-factor: `X-API-Key` proves *who* may submit (caller auth), the Ed25519 `signature` proves *what* is authorized (bounded, single-use).
+/// Both are required on `POST /v1/mandates` and `POST /v1/checkout`; read-only `GET /v1/decisions` etc. stay public for the dashboard.
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
@@ -155,6 +157,8 @@ pub async fn checkout(
 ) -> Result<Json<DecisionResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Two-factor: API key (who) already verified by `require_api_key` middleware;
+    // Ed25519 signature (what) verified inside `policy::evaluate` next.
     let agent_id = req.mandate.agent_id.trim();
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));

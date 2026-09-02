@@ -92,6 +92,8 @@ Mandate + signature + amount_minor ──POST /v1/checkout──▶ Policy Engin
 | **Gateway** | `POST https://api.razorpay.com/v1/orders` with basic auth | Override a `REJECT` |
 | **Store** | Enforce nonce uniqueness via `PRIMARY KEY` | Be bypassed — even a valid sig replays as `REJECT` |
 
+**Two-factor — mandate + API key (deliberate):** `POST /v1/checkout` requires *both* a valid Ed25519 `signature` (proves *what* is authorized — bounded, expiring, single-use) *and* a valid `X-API-Key` (proves *who* may submit — the caller is an authorized agent, `src/app.rs:75` `require_api_key` with `subtle::ConstantTimeEq`). The signature alone would let anyone who steals a mandate replay it; the API key alone would let any caller mint any amount. Together they are the design, not a leftover — the dashboard's `localStorage` key is demo-only and never logged.
+
 **Gateway seam:** `Gateway::from_env()` reads `RAZORPAY_KEY_ID/SECRET`. Present → `Razorpay { basic_auth, live:true, receipt=mandate_id }`, absent → `Mock { live:false }`. Checkout code calls `gateway.create_order()` blind — the swap is one `match` arm in `src/gateway.rs:1`.
 
 **Deterministic seed:** `MANDATEPAY_SEED` (base64 32B) fixes the authority key. Server and `cargo run --bin eval` share it, so the harness can mint *validly signed* hostile mandates — the strongest attack class. No seed → ephemeral key per boot (fine for demos, eval refuses to run).
