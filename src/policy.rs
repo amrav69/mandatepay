@@ -1,4 +1,4 @@
-use crate::mandates::{Authority, Mandate, VerifyError, unix_now};
+use crate::mandates::{Authority, Mandate, unix_now};
 use crate::store::Db;
 
 pub enum Decision {
@@ -41,6 +41,14 @@ pub fn evaluate(
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
     }
+    if unix_now() >= mandate.expires_at {
+        return reject("mandate expired");
+    }
+
+    if let Err(_) = authority.verify(mandate, signature_b64) {
+        return reject("invalid signature");
+    }
+
     if !allowed_merchants.iter().any(|m| m == &mandate.merchant_id) {
         return reject(format!(
             "merchant '{}' is not allowlisted",
@@ -55,18 +63,6 @@ pub fn evaluate(
             "amount {amount_minor} exceeds mandate cap {}",
             mandate.max_amount_minor
         ));
-    }
-
-    if let Err(e) = authority.verify(mandate, signature_b64) {
-        return reject(match e {
-            VerifyError::MalformedSignature => "malformed signature encoding",
-            VerifyError::InvalidSignature => "signature does not verify against mandate authority",
-            VerifyError::Canonicalization(_) => "canonical serialization failed",
-        });
-    }
-
-    if unix_now() >= mandate.expires_at {
-        return reject("mandate expired");
     }
 
     match db.try_claim_nonce(&mandate.nonce) {
