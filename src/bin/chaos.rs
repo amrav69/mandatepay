@@ -25,7 +25,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("======================================================================");
     println!(" MANDATEPAY CHAOS — 10 concurrent checkouts on the SAME mandate");
-    println!(" Expected: exactly 1 ALLOW, 9 REJECT (nonce replay) — at-most-once");
+    println!(
+        " Expected: at-most-once with idempotent replay — allow+reject==10, 1 unique order, allow>=1"
+    );
     println!("======================================================================");
 
     let issued: Value = http
@@ -99,11 +101,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         " result: {allow} ALLOW, {reject} REJECT, unique orders: {}",
         order_ids.len()
     );
-    if allow == 1 && reject == 9 && order_ids.len() == 1 {
-        println!(" CHAOS GREEN — at-most-once held under concurrent race");
+    // With B17 idempotent early-cache (before nonce), concurrent retries that hit the
+    // cache correctly return ALLOW with "idempotent replay: cached order returned"
+    // instead of REJECT. So the strict 1/9 expectation is outdated — the invariant is
+    // at-most-once: allow+reject==10, exactly 1 unique order, and at least 1 ALLOW.
+    if allow + reject == 10 && order_ids.len() == 1 && allow >= 1 {
+        println!(
+            " CHAOS GREEN — at-most-once held under concurrent race (idempotent replay allowed)"
+        );
         Ok(())
     } else {
-        eprintln!(" CHAOS RED — expected 1 ALLOW / 9 REJECT with 1 unique order");
+        eprintln!(
+            " CHAOS RED — expected allow+reject==10 with 1 unique order and allow>=1 (got {allow} ALLOW / {reject} REJECT)"
+        );
         std::process::exit(1);
     }
 }
