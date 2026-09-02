@@ -151,6 +151,10 @@ Visible in Razorpay Dashboard → Orders (test mode). `gateway: mock` vs `razorp
 
 Honesty is the bar — every number above is from `cargo run --bin eval` on the commit you are reading, not a screenshot from another run.
 
+## Known limitations
+
+- `nonces` and `decisions` tables grow without TTL pruning — `store.rs` never deletes expired nonces or mandates. For a demo this is fine; for production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7` and a `decisions` retention job.
+
 ## License
 
 MIT
