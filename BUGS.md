@@ -36,7 +36,7 @@
 | H9 | `src/gateway.rs:44` | Mock fallback silent when one key missing | **Fixed** `4f950fb` — `tracing::warn` + `GatewayError::NotConfigured` |
 | H10 | `src/app.rs:202` | Gateway error still `ALLOW` with `order_id=None` | **Fixed** `90dddcc` — now `REJECT` on gateway `Err` or `500` |
 | H11 | `src/main.rs:21` | `load_seed` ephemeral fallback → restart invalidates all mandates | **Fixed** — now `tracing::warn` + `MANDATEPAY_SEED` required in prod, `DEV_MODE` explicit |
-| H12 | `src/app.rs:433-467` | `create_agent` TOCTOU `if exists then update` | **Fixed** `d76f082` — `INSERT OR IGNORE` + check `row_count` |
+| H12 | `src/app.rs:433-467` | `create_agent` TOCTOU `if exists then update` | **Open** — `get_agent_policy` then `update_agent` still separate locks; needs `INSERT ... ON CONFLICT DO NOTHING` + check `row_count` atomically |
 
 ### Medium (19) — honesty/scale leaks
 
@@ -49,8 +49,8 @@
 | M5 | `src/app.rs:350-369` | `list_agents` `q` filter after pagination → invisible matches | **Fixed** `2d1712c` — now `LIMIT/OFFSET` + `LIKE` in SQL |
 | M6 | `src/gateway.rs:91` | No `connect_timeout` | **Fixed** `4f950fb` |
 | M7 | `Dockerfile:1` | `rust:1-slim` unpinned | **Fixed** `3832bf7` — `rust:1.82-slim-bookworm` |
-| M8 | `src/auth.rs:17` | `ct_eq` not length-constant | **Fixed** — now `SHA256` then `ct_eq` |
-| M9 | `src/store.rs:90` | `expect("poisoned")` on money path | **Fixed** — `lock().unwrap_or_else(|e| e.into_inner())` + `AppError::Internal` |
+| M8 | `src/auth.rs:17` | `ct_eq` not length-constant | **Open** — `subtle::ConstantTimeEq` on `as_bytes()` leaks length; needs `SHA256` then `ct_eq` on fixed-length hashes |
+| M9 | `src/store.rs:90` | `expect("poisoned")` on money path | **Open** — 13 sites still `lock().expect("poisoned")` on money path; should be `lock().unwrap_or_else(|e| e.into_inner())` |
 | M10 | `src/app.rs:373` | `allowed_merchants` no dedup/length cap | **Fixed** — `HashSet` dedup + `validate(length)` |
 
 ### Low — polish already shipped
