@@ -306,6 +306,53 @@ async fn get_agent_requires_auth() {
 }
 
 #[tokio::test]
+async fn list_agents_sort() {
+    let (app, key) = test_app();
+    for (id, cap) in [("sort-a", 1000), ("sort-b", 3000), ("sort-c", 2000)] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/agents")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &key)
+                    .body(Body::from(
+                        json!({"agent_id": id, "max_cap": cap}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents?sort=max_cap&order=desc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let agents = body["agents"].as_array().unwrap();
+    let caps: Vec<u64> = agents
+        .iter()
+        .filter(|a| a["agent_id"].as_str().unwrap().starts_with("sort-"))
+        .map(|a| a["max_cap"].as_u64().unwrap())
+        .collect();
+    assert_eq!(caps, vec![3000, 2000, 1000]);
+}
+
+#[tokio::test]
 async fn forged_merchant_does_not_leak_allowlist() {
     let (app, key) = test_app();
     let resp = app

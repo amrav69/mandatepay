@@ -395,6 +395,8 @@ pub struct AgentListParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub q: Option<String>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
 }
 
 pub async fn list_agents(
@@ -415,6 +417,35 @@ pub async fn list_agents(
     {
         let needle = q.to_lowercase();
         agents.retain(|a| a.agent_id.to_lowercase().contains(&needle));
+    }
+    let sort = params.sort.as_deref().unwrap_or("agent_id");
+    let desc = params
+        .order
+        .as_deref()
+        .unwrap_or("asc")
+        .eq_ignore_ascii_case("desc");
+    match sort {
+        "max_cap" => agents.sort_by(|a, b| {
+            if desc {
+                b.max_cap.cmp(&a.max_cap)
+            } else {
+                a.max_cap.cmp(&b.max_cap)
+            }
+        }),
+        "velocity_limit" => agents.sort_by(|a, b| {
+            if desc {
+                b.velocity_limit.cmp(&a.velocity_limit)
+            } else {
+                a.velocity_limit.cmp(&b.velocity_limit)
+            }
+        }),
+        _ => agents.sort_by(|a, b| {
+            if desc {
+                b.agent_id.cmp(&a.agent_id)
+            } else {
+                a.agent_id.cmp(&b.agent_id)
+            }
+        }),
     }
     Ok(Json(json!({ "agents": agents })))
 }
