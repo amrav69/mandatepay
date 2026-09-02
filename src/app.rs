@@ -177,15 +177,6 @@ pub async fn checkout(
         return Err(AppError::BadRequest("agent_id required".into()));
     }
 
-    if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
-        return Ok(Json(DecisionResponse {
-            decision: "ALLOW".into(),
-            reason: "idempotent replay: cached order returned".into(),
-            order_id: Some(cached),
-            gateway: state.gateway.label().into(),
-        }));
-    }
-
     let agent_policy = state.db.get_agent_policy(agent_id)?.unwrap_or_else(|| {
         let allow = parse_allowlist();
         crate::store::AgentPolicy {
@@ -235,6 +226,31 @@ pub async fn checkout(
     }
 
     let allowed_merchants = agent_policy.allowed_merchants.clone();
+
+    // Idempotency: same mandate_id already succeeded once — return cached order without
+    // re-consuming nonce or velocity budget, but only after the current request has passed
+    // the cheap authz gates that would be checked anyway:
+    //   1) authority.verify (signature)  2) expires_at  3) agent cap (already checked above)
+    // This ensures a forged/unverified request can't hit a stale ALLOW cache.
+    if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+        let verify_ok = state.authority.verify(&req.mandate, &req.signature).is_ok();
+        let not_expired = mandates::unix_now() < req.mandate.expires_at;
+        let allowlist_ok = allowed_merchants
+            .iter()
+            .any(|m| m == &req.mandate.merchant_id);
+        let amount_ok = req.amount_minor != 0
+            && req.amount_minor <= req.mandate.max_amount_minor
+            && req.amount_minor <= agent_policy.max_cap
+            && req.mandate.max_amount_minor <= agent_policy.max_cap;
+        if verify_ok && not_expired && allowlist_ok && amount_ok {
+            return Ok(Json(DecisionResponse {
+                decision: "ALLOW".into(),
+                reason: "idempotent replay: cached order returned".into(),
+                order_id: Some(cached),
+                gateway: state.gateway.label().into(),
+            }));
+        }
+    }
 
     let mut decision = policy::evaluate(
         &state.authority,
