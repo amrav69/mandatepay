@@ -41,7 +41,7 @@ jobs:
       - name: Deny
         run: |
           cargo install cargo-deny --locked
-          cargo deny check advisories || true
+          cargo deny check
 
       - name: Attack suite against live server
         run: |
