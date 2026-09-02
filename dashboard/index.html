@@ -218,8 +218,8 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
         <div data-value="200">200 rows</div>
       </div>
     </div>
-    <button class="btn" id="pauseBtn" onclick="togglePause()">Pause</button>
-    <button class="btn" onclick="refreshOnce()">Refresh now</button>
+    <button class="btn" id="pauseBtn">Pause</button>
+    <button class="btn" id="refreshBtn">Refresh now</button>
     <span id="status" class="status">loading…</span>
     <span style="flex:1"></span>
     <span class="status" style="opacity:0.8">Click a row → replay its signed payload</span>
@@ -254,6 +254,8 @@ menu.addEventListener('click', (e)=>{
   refreshOnce();
 });
 document.addEventListener('click', (e)=>{ if(!sel.contains(e.target)){ menu.hidden=true; sel.classList.remove('open'); } });
+document.getElementById('pauseBtn').addEventListener('click', togglePause);
+document.getElementById('refreshBtn').addEventListener('click', refreshOnce);
 
 function togglePause(){
   paused=!paused;
@@ -312,7 +314,6 @@ async function refreshOnce(){
     status.style.color="#ff7a7a";
   }
 }
-function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function getApiKey(){
   let k=localStorage.getItem('MANDATEPAY_API_KEY')||'';
   if(!k){
@@ -323,16 +324,103 @@ function getApiKey(){
 }
 function renderAgents(agents){
   const el=document.getElementById('agentsTable');
-  if(!agents.length){ el.textContent="no agents yet — run an agent or eval to create one"; return; }
+  // clear safely
+  while(el.firstChild) el.removeChild(el.firstChild);
+  if(!agents.length){
+    el.textContent="no agents yet — run an agent or eval to create one";
+    return;
+  }
   let sortBy = localStorage.getItem('MP_SORT_BY') || 'agent_id';
   let sortOrder = localStorage.getItem('MP_SORT_ORDER') || 'asc';
-  let html='<table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="color:#8ea0bb;text-align:left"><th style="padding:6px 8px">Agent</th><th style="padding:6px 8px;cursor:pointer" onclick="toggleSort(\'max_cap\')">Cap '+(sortBy==='max_cap'?(sortOrder==='desc'?'▼':'▲'):'')+'</th><th style="padding:6px 8px;cursor:pointer" onclick="toggleSort(\'velocity_limit\')">Velocity '+(sortBy==='velocity_limit'?(sortOrder==='desc'?'▼':'▲'):'')+'</th><th style="padding:6px 8px">Merchants</th><th style="padding:6px 8px">Actions</th></tr></thead><tbody>';
-  for(const a of agents.slice(0,12)){
-    const safeId = escapeHtml(a.agent_id);
-    html+=`<tr style="border-top:1px solid rgba(255,255,255,0.06)"><td style="padding:7px 8px" class="mono">${safeId}</td><td style="padding:7px 8px">₹${(a.max_cap/100).toFixed(0)}</td><td style="padding:7px 8px">${a.velocity_limit}/min</td><td style="padding:7px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escapeHtml((a.allowed_merchants||[]).join(", "))}</td><td style="padding:7px 8px;white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" data-cap="${a.max_cap}" data-vel="${a.velocity_limit}" onclick="editAgent(this.dataset.agentId, this.dataset.cap, this.dataset.vel)">Edit</button> <button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" onclick="deleteAgent(this.dataset.agentId)">Delete</button></td></tr>`;
-  }
-  html+='</tbody></table><div style="margin-top:8px;font-size:11px;color:#7d8ca6">Tip: caps and velocity are per-agent and live — edits take effect on the next checkout. <a href="#" onclick="localStorage.removeItem(\'MANDATEPAY_API_KEY\');alert(\'API key cleared\');return false" style="color:#8ea0bb">clear key</a></div>';
-  el.innerHTML=html;
+  const table = document.createElement('table');
+  table.style.width="100%";
+  table.style.borderCollapse="collapse";
+  table.style.fontSize="11.5px";
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headRow.style.color="#8ea0bb";
+  headRow.style.textAlign="left";
+  const headers = [
+    {label:"Agent", field:null},
+    {label:"Cap", field:"max_cap"},
+    {label:"Velocity", field:"velocity_limit"},
+    {label:"Merchants", field:null},
+    {label:"Actions", field:null}
+  ];
+  headers.forEach(h=>{
+    const th=document.createElement('th');
+    th.style.padding="6px 8px";
+    th.textContent=h.label;
+    if(h.field){
+      th.style.cursor="pointer";
+      const indicator = sortBy===h.field ? (sortOrder==='desc'?' ▼':' ▲') : '';
+      th.textContent=h.label + indicator;
+      th.addEventListener('click', ()=>toggleSort(h.field));
+    }
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody=document.createElement('tbody');
+  agents.slice(0,12).forEach(a=>{
+    const tr=document.createElement('tr');
+    tr.style.borderTop="1px solid rgba(255,255,255,0.06)";
+    const tdAgent=document.createElement('td');
+    tdAgent.style.padding="7px 8px";
+    tdAgent.className="mono";
+    tdAgent.textContent=a.agent_id;
+    tr.appendChild(tdAgent);
+    const tdCap=document.createElement('td');
+    tdCap.style.padding="7px 8px";
+    tdCap.textContent="₹"+(a.max_cap/100).toFixed(0);
+    tr.appendChild(tdCap);
+    const tdVel=document.createElement('td');
+    tdVel.style.padding="7px 8px";
+    tdVel.textContent=a.velocity_limit+"/min";
+    tr.appendChild(tdVel);
+    const tdMerch=document.createElement('td');
+    tdMerch.style.padding="7px 8px";
+    tdMerch.style.whiteSpace="nowrap";
+    tdMerch.style.overflow="hidden";
+    tdMerch.style.textOverflow="ellipsis";
+    tdMerch.style.maxWidth="180px";
+    tdMerch.textContent=(a.allowed_merchants||[]).join(", ");
+    tr.appendChild(tdMerch);
+    const tdActions=document.createElement('td');
+    tdActions.style.padding="7px 8px";
+    tdActions.style.whiteSpace="nowrap";
+    const btnEdit=document.createElement('button');
+    btnEdit.className="btn";
+    btnEdit.style.padding="4px 8px";
+    btnEdit.style.fontSize="11px";
+    btnEdit.textContent="Edit";
+    btnEdit.addEventListener('click', ()=>editAgent(a.agent_id, String(a.max_cap), String(a.velocity_limit)));
+    tdActions.appendChild(btnEdit);
+    tdActions.appendChild(document.createTextNode(" "));
+    const btnDel=document.createElement('button');
+    btnDel.className="btn";
+    btnDel.style.padding="4px 8px";
+    btnDel.style.fontSize="11px";
+    btnDel.textContent="Delete";
+    btnDel.addEventListener('click', ()=>deleteAgent(a.agent_id));
+    tdActions.appendChild(btnDel);
+    tr.appendChild(tdActions);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  el.appendChild(table);
+  const tip=document.createElement('div');
+  tip.style.marginTop="8px";
+  tip.style.fontSize="11px";
+  tip.style.color="#7d8ca6";
+  tip.textContent="Tip: caps and velocity are per-agent and live — edits take effect on the next checkout. ";
+  const clearLink=document.createElement('a');
+  clearLink.href="#";
+  clearLink.style.color="#8ea0bb";
+  clearLink.textContent="clear key";
+  clearLink.addEventListener('click', (e)=>{ e.preventDefault(); localStorage.removeItem('MANDATEPAY_API_KEY'); alert('API key cleared'); });
+  tip.appendChild(clearLink);
+  el.appendChild(tip);
 }
 async function editAgent(id, curCap, curVel){
   const k=getApiKey(); if(!k) return alert('API key required');
@@ -355,22 +443,50 @@ async function deleteAgent(id){
 }
 function render(rows){
   const tb=document.getElementById('tbody');
+  while(tb.firstChild) tb.removeChild(tb.firstChild);
   if(!rows.length){
-    tb.innerHTML='<tr><td colspan="6" style="color:#8ea0bb;padding:22px 12px">No decisions yet — run <code>cargo run --bin agent</code> or <code>cargo run --bin eval</code></td></tr>';
+    const tr=document.createElement('tr');
+    const td=document.createElement('td');
+    td.colSpan=6;
+    td.style.color="#8ea0bb";
+    td.style.padding="22px 12px";
+    td.textContent="No decisions yet — run cargo run --bin agent or cargo run --bin eval";
+    tr.appendChild(td);
+    tb.appendChild(tr);
     return;
   }
-  tb.innerHTML="";
-  for(const r of rows){
+  rows.forEach(r=>{
     const tr=document.createElement('tr');
     const isExpanded = expandedId===r.id;
-    tr.innerHTML=`
-      <td class="col-id">${r.id}</td>
-      <td class="col-ts">${fmtTs(r.ts)}</td>
-      <td class="col-ep" title="${escapeHtml(r.endpoint)}">${escapeHtml(r.endpoint)}</td>
-      <td><span class="badge badge-${r.decision}">${r.decision}</span></td>
-      <td class="reason" title="${escapeHtml(r.reason)}">${escapeHtml(truncate(r.reason,112))}</td>
-      <td class="payload-cell" title="${escapeHtml(r.payload)}">${escapeHtml(truncate(r.payload,58))}</td>
-    `;
+    const tdId=document.createElement('td');
+    tdId.className="col-id";
+    tdId.textContent=r.id;
+    tr.appendChild(tdId);
+    const tdTs=document.createElement('td');
+    tdTs.className="col-ts";
+    tdTs.textContent=fmtTs(r.ts);
+    tr.appendChild(tdTs);
+    const tdEp=document.createElement('td');
+    tdEp.className="col-ep";
+    tdEp.title=r.endpoint;
+    tdEp.textContent=r.endpoint;
+    tr.appendChild(tdEp);
+    const tdDec=document.createElement('td');
+    const badge=document.createElement('span');
+    badge.className="badge badge-"+r.decision;
+    badge.textContent=r.decision;
+    tdDec.appendChild(badge);
+    tr.appendChild(tdDec);
+    const tdReason=document.createElement('td');
+    tdReason.className="reason";
+    tdReason.title=r.reason;
+    tdReason.textContent=truncate(r.reason,112);
+    tr.appendChild(tdReason);
+    const tdPayload=document.createElement('td');
+    tdPayload.className="payload-cell";
+    tdPayload.title=r.payload;
+    tdPayload.textContent=truncate(r.payload,58);
+    tr.appendChild(tdPayload);
     tr.addEventListener('click',()=>{ expandedId = isExpanded ? null : r.id; render(rows); });
     tb.appendChild(tr);
     if(isExpanded){
@@ -379,19 +495,45 @@ function render(rows){
       td.colSpan=6;
       td.style.background="rgba(255,255,255,0.02)";
       td.style.cursor="default";
+      const grid=document.createElement('div');
+      grid.className="detail-grid";
+      const col1=document.createElement('div');
+      const k2_1=document.createElement('div');
+      k2_1.className="k2";
+      k2_1.textContent="Full reason";
+      col1.appendChild(k2_1);
+      const reasonDiv=document.createElement('div');
+      reasonDiv.className="reason";
+      reasonDiv.style.fontSize="12.5px";
+      reasonDiv.style.whiteSpace="normal";
+      reasonDiv.style.overflow="visible";
+      reasonDiv.style.textOverflow="clip";
+      reasonDiv.textContent=r.reason;
+      col1.appendChild(reasonDiv);
+      grid.appendChild(col1);
+      const col2=document.createElement('div');
+      const k2_2=document.createElement('div');
+      k2_2.className="k2";
+      k2_2.textContent="Signed mandate payload — what was verified · click to copy";
+      col2.appendChild(k2_2);
+      const pre=document.createElement('pre');
+      pre.className="payload-pre";
       let pretty=r.payload;
       try{ pretty=JSON.stringify(JSON.parse(r.payload),null,2); }catch{}
-      const safeReason = escapeHtml(r.reason);
-      const safePretty = escapeHtml(pretty);
-      td.innerHTML=`
-        <div class="detail-grid">
-          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px;white-space:normal;overflow:visible;text-overflow:clip">${safeReason}</div></div>
-          <div><div class="k2">Signed mandate payload — what was verified <span style="opacity:0.6">· click to copy</span></div><pre class="payload-pre" onclick="navigator.clipboard.writeText(this.textContent).then(()=>{this.style.borderColor='rgba(138,180,255,0.35)'; setTimeout(()=>this.style.borderColor='',900)})">${safePretty}</pre></div>
-        </div>
-      `;
+      pre.textContent=pretty;
+      pre.addEventListener('click', ()=>{
+        navigator.clipboard.writeText(pre.textContent).then(()=>{
+          pre.style.borderColor='rgba(138,180,255,0.35)';
+          setTimeout(()=>pre.style.borderColor='',900);
+        });
+      });
+      col2.appendChild(pre);
+      grid.appendChild(col2);
+      td.appendChild(grid);
+      er.appendChild(td);
       tb.appendChild(er);
     }
-  }
+  });
 }
 refreshOnce();
 setInterval(()=>{ if(!paused) refreshOnce(); },2000);
