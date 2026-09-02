@@ -407,6 +407,40 @@ impl Db {
         Ok(policy)
     }
 
+    /// Atomic insert for `POST /v1/agents` — returns `true` if a new row was inserted,
+    /// `false` if the agent already existed. Caller must map `false` to `400 already exists`
+    /// without a prior `SELECT` to avoid TOCTOU.
+    pub fn try_create_agent(
+        &self,
+        agent_id: &str,
+        max_cap: Option<u64>,
+        velocity_limit: Option<u32>,
+        velocity_window_secs: Option<u64>,
+        allowed_merchants: Option<Vec<String>>,
+    ) -> rusqlite::Result<bool> {
+        let max_cap_val = max_cap.unwrap_or(50000) as i64;
+        let velocity_limit_val = velocity_limit.unwrap_or(50) as i64;
+        let velocity_window_secs_val = velocity_window_secs.unwrap_or(60) as i64;
+        let merchants = match allowed_merchants {
+            Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
+            None => r#"["merchant-001"]"#.to_string(),
+        };
+        let conn = self.0.lock().expect("agent policy poisoned");
+        let now = unix_now() as i64;
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                agent_id,
+                max_cap_val,
+                velocity_limit_val,
+                velocity_window_secs_val,
+                merchants,
+                now
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn list_agents(&self) -> rusqlite::Result<Vec<AgentPolicy>> {
         let conn = self.0.lock().expect("agent policy poisoned");
         let mut stmt = conn.prepare(

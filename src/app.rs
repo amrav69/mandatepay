@@ -562,9 +562,6 @@ pub async fn create_agent(
     if id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
     }
-    if state.db.get_agent_policy(id)?.is_some() {
-        return Err(AppError::BadRequest(format!("agent {id} already exists")));
-    }
     if let Some(v) = req.max_cap {
         if v == 0 {
             return Err(AppError::BadRequest("max_cap must be positive".into()));
@@ -587,9 +584,10 @@ pub async fn create_agent(
             "velocity_window_secs must be positive".into(),
         ));
     }
-    let policy = state
+    // Atomic: INSERT OR IGNORE returns 0 if already exists — no separate existence check (avoids TOCTOU).
+    let inserted = state
         .db
-        .update_agent(
+        .try_create_agent(
             id,
             req.max_cap,
             req.velocity_limit,
@@ -597,6 +595,14 @@ pub async fn create_agent(
             req.allowed_merchants,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    if !inserted {
+        return Err(AppError::BadRequest(format!("agent {id} already exists")));
+    }
+    let policy = state
+        .db
+        .get_agent_policy(id)
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .expect("just inserted");
     Ok(Json(json!(policy)))
 }
 
