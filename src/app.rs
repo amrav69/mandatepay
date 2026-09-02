@@ -160,6 +160,15 @@ pub async fn checkout(
         return Err(AppError::BadRequest("agent_id required".into()));
     }
 
+    if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+        return Ok(Json(DecisionResponse {
+            decision: "ALLOW".into(),
+            reason: "idempotent replay: cached order returned".into(),
+            order_id: Some(cached),
+            gateway: state.gateway.label().into(),
+        }));
+    }
+
     let agent_policy = state.db.get_agent_policy(agent_id)?.unwrap_or_else(|| {
         let allow = parse_allowlist();
         crate::store::AgentPolicy {
