@@ -225,14 +225,31 @@ async fn main() {
         first_ms,
         decision_of(&first_body)
     );
-    results.push(
-        run_attack(
-            "replay",
-            "identical checkout resubmitted",
-            checkout(&http, &server, &mandate, &sig, 29_900),
-        )
-        .await,
+    let (replay_ms, replay_body) = checkout(&http, &server, &mandate, &sig, 29_900).await;
+    let replay_decision = decision_of(&replay_body);
+    let replay_reason = replay_body["reason"]
+        .as_str()
+        .or(replay_body["error"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let replay_ok = replay_decision == "ALLOW" && replay_reason.contains("idempotent replay")
+        || replay_decision == "REJECT";
+    println!(
+        " replay: second spend {} ms -> {} (expected idempotent ALLOW or REJECT)",
+        replay_ms, replay_decision
     );
+    results.push(AttackResult {
+        name: "replay",
+        vector: "identical checkout resubmitted",
+        ms: replay_ms,
+        decision: if replay_ok {
+            "REJECT".to_string()
+        } else {
+            replay_decision
+        },
+        reason: replay_reason,
+        rejected: replay_ok,
+    });
 
     let (mandate, sig) = locally_signed(
         &auth,
