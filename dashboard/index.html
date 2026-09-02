@@ -302,6 +302,7 @@ async function refreshOnce(){
     status.style.color="#ff7a7a";
   }
 }
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function getApiKey(){
   let k=localStorage.getItem('MANDATEPAY_API_KEY')||'';
   if(!k){
@@ -315,7 +316,8 @@ function renderAgents(agents){
   if(!agents.length){ el.textContent="no agents yet — run an agent or eval to create one"; return; }
   let html='<table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="color:#8ea0bb;text-align:left"><th style="padding:6px 8px">Agent</th><th style="padding:6px 8px">Cap</th><th style="padding:6px 8px">Velocity</th><th style="padding:6px 8px">Merchants</th><th style="padding:6px 8px">Actions</th></tr></thead><tbody>';
   for(const a of agents.slice(0,12)){
-    html+=`<tr style="border-top:1px solid rgba(255,255,255,0.06)"><td style="padding:7px 8px" class="mono">${a.agent_id}</td><td style="padding:7px 8px">₹${(a.max_cap/100).toFixed(0)}</td><td style="padding:7px 8px">${a.velocity_limit}/min</td><td style="padding:7px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${(a.allowed_merchants||[]).join(", ")}</td><td style="padding:7px 8px;white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" onclick="editAgent('${a.agent_id}',${a.max_cap},${a.velocity_limit})">Edit</button> <button class="btn" style="padding:4px 8px;font-size:11px" onclick="deleteAgent('${a.agent_id}')">Delete</button></td></tr>`;
+    const safeId = escapeHtml(a.agent_id);
+    html+=`<tr style="border-top:1px solid rgba(255,255,255,0.06)"><td style="padding:7px 8px" class="mono">${safeId}</td><td style="padding:7px 8px">₹${(a.max_cap/100).toFixed(0)}</td><td style="padding:7px 8px">${a.velocity_limit}/min</td><td style="padding:7px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escapeHtml((a.allowed_merchants||[]).join(", "))}</td><td style="padding:7px 8px;white-space:nowrap"><button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" data-cap="${a.max_cap}" data-vel="${a.velocity_limit}" onclick="editAgent(this.dataset.agentId, this.dataset.cap, this.dataset.vel)">Edit</button> <button class="btn" style="padding:4px 8px;font-size:11px" data-agent-id="${safeId}" onclick="deleteAgent(this.dataset.agentId)">Delete</button></td></tr>`;
   }
   html+='</tbody></table><div style="margin-top:8px;font-size:11px;color:#7d8ca6">Tip: caps and velocity are per-agent and live — edits take effect on the next checkout. <a href="#" onclick="localStorage.removeItem(\'MANDATEPAY_API_KEY\');alert(\'API key cleared\');return false" style="color:#8ea0bb">clear key</a></div>';
   el.innerHTML=html;
@@ -352,10 +354,10 @@ function render(rows){
     tr.innerHTML=`
       <td class="col-id">${r.id}</td>
       <td class="col-ts">${fmtTs(r.ts)}</td>
-      <td class="col-ep" title="${r.endpoint}">${r.endpoint}</td>
+      <td class="col-ep" title="${escapeHtml(r.endpoint)}">${escapeHtml(r.endpoint)}</td>
       <td><span class="badge badge-${r.decision}">${r.decision}</span></td>
-      <td class="reason" title="${r.reason.replaceAll('"','&quot;')}">${truncate(r.reason,112)}</td>
-      <td class="payload-cell" title="${r.payload.replaceAll('"','&quot;')}">${truncate(r.payload,58)}</td>
+      <td class="reason" title="${escapeHtml(r.reason)}">${escapeHtml(truncate(r.reason,112))}</td>
+      <td class="payload-cell" title="${escapeHtml(r.payload)}">${escapeHtml(truncate(r.payload,58))}</td>
     `;
     tr.addEventListener('click',()=>{ expandedId = isExpanded ? null : r.id; render(rows); });
     tb.appendChild(tr);
@@ -367,10 +369,12 @@ function render(rows){
       td.style.cursor="default";
       let pretty=r.payload;
       try{ pretty=JSON.stringify(JSON.parse(r.payload),null,2); }catch{}
+      const safeReason = escapeHtml(r.reason);
+      const safePretty = escapeHtml(pretty);
       td.innerHTML=`
         <div class="detail-grid">
-          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px;white-space:normal;overflow:visible;text-overflow:clip">${r.reason}</div></div>
-          <div><div class="k2">Signed mandate payload — what was verified <span style="opacity:0.6">· click to copy</span></div><pre class="payload-pre" onclick="navigator.clipboard.writeText(this.textContent).then(()=>{this.style.borderColor='rgba(138,180,255,0.35)'; setTimeout(()=>this.style.borderColor='',900)})">${pretty}</pre></div>
+          <div><div class="k2">Full reason</div><div class="reason" style="font-size:12.5px;white-space:normal;overflow:visible;text-overflow:clip">${safeReason}</div></div>
+          <div><div class="k2">Signed mandate payload — what was verified <span style="opacity:0.6">· click to copy</span></div><pre class="payload-pre" onclick="navigator.clipboard.writeText(this.textContent).then(()=>{this.style.borderColor='rgba(138,180,255,0.35)'; setTimeout(()=>this.style.borderColor='',900)})">${safePretty}</pre></div>
         </div>
       `;
       tb.appendChild(er);

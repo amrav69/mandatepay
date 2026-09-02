@@ -310,7 +310,7 @@ impl Db {
         let now = unix_now();
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
-             VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
+             VALUES (?1, 50000, 50, 60, 'merchant-001', ?2, ?2)",
             params![agent_id, now as i64],
         )?;
         let (velocity_limit, velocity_window_secs): (i64, i64) = conn.query_row(
@@ -318,6 +318,11 @@ impl Db {
             params![agent_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        if velocity_window_secs <= 0 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "velocity_window_secs must be positive".to_string(),
+            ));
+        }
         let window_start = now - (now % velocity_window_secs as u64);
         conn.execute(
             "INSERT INTO agent_velocity (agent_id, window_start, count) VALUES (?1, ?2, 1)

@@ -108,6 +108,11 @@ pub async fn issue(
             "only INR mandates are supported".into(),
         ));
     }
+    if req.max_amount_minor > i64::MAX as u64 {
+        return Err(AppError::BadRequest(
+            "max_amount_minor exceeds i64::MAX".into(),
+        ));
+    }
     if req.max_amount_minor > state.max_mandate_cap {
         return Err(AppError::BadRequest(format!(
             "max_amount_minor {} exceeds server cap {}",
@@ -159,6 +164,14 @@ pub async fn checkout(
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     // Two-factor: API key (who) already verified by `require_api_key` middleware;
     // Ed25519 signature (what) verified inside `policy::evaluate` next.
+    if req.amount_minor > i64::MAX as u64 {
+        return Err(AppError::BadRequest("amount_minor exceeds i64::MAX".into()));
+    }
+    if req.mandate.max_amount_minor > i64::MAX as u64 {
+        return Err(AppError::BadRequest(
+            "mandate max_amount_minor exceeds i64::MAX".into(),
+        ));
+    }
     let agent_id = req.mandate.agent_id.trim();
     if agent_id.is_empty() {
         return Err(AppError::BadRequest("agent_id required".into()));
@@ -463,16 +476,26 @@ pub async fn update_agent(
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if let Some(v) = req.max_cap
-        && v == 0
-    {
-        return Err(AppError::BadRequest("max_cap must be positive".into()));
+    if let Some(v) = req.max_cap {
+        if v == 0 {
+            return Err(AppError::BadRequest("max_cap must be positive".into()));
+        }
+        if v > i64::MAX as u64 {
+            return Err(AppError::BadRequest("max_cap exceeds i64::MAX".into()));
+        }
     }
     if let Some(v) = req.velocity_limit
         && v == 0
     {
         return Err(AppError::BadRequest(
             "velocity_limit must be positive".into(),
+        ));
+    }
+    if let Some(v) = req.velocity_window_secs
+        && v == 0
+    {
+        return Err(AppError::BadRequest(
+            "velocity_window_secs must be positive".into(),
         ));
     }
     let policy = state
@@ -522,16 +545,26 @@ pub async fn create_agent(
     if state.db.get_agent_policy(id)?.is_some() {
         return Err(AppError::BadRequest(format!("agent {id} already exists")));
     }
-    if let Some(v) = req.max_cap
-        && v == 0
-    {
-        return Err(AppError::BadRequest("max_cap must be positive".into()));
+    if let Some(v) = req.max_cap {
+        if v == 0 {
+            return Err(AppError::BadRequest("max_cap must be positive".into()));
+        }
+        if v > i64::MAX as u64 {
+            return Err(AppError::BadRequest("max_cap exceeds i64::MAX".into()));
+        }
     }
     if let Some(v) = req.velocity_limit
         && v == 0
     {
         return Err(AppError::BadRequest(
             "velocity_limit must be positive".into(),
+        ));
+    }
+    if let Some(v) = req.velocity_window_secs
+        && v == 0
+    {
+        return Err(AppError::BadRequest(
+            "velocity_window_secs must be positive".into(),
         ));
     }
     let policy = state
@@ -566,6 +599,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             require_api_key,
         ));
 
+    // Public reads: health + dashboard + ledger/stats for demo. In production, gate /v1/decisions/* and /v1/agents behind read-auth or a redacted view.
     Router::new()
         .route("/", get(dashboard))
         .route("/health", get(health))

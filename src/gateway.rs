@@ -56,7 +56,11 @@ impl Gateway {
             Gateway::Razorpay {
                 key_id,
                 key_secret,
-                http: reqwest::Client::new(),
+                http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("reqwest client builds"),
             }
         } else {
             tracing::info!("gateway: no RAZORPAY keys in env -> mock gateway (no money moves)");
@@ -105,6 +109,7 @@ impl Gateway {
                 let resp = http
                     .post("https://api.razorpay.com/v1/orders")
                     .basic_auth(key_id, Some(key_secret))
+                    .header("Idempotency-Key", &mandate.mandate_id)
                     .json(&payload)
                     .send()
                     .await

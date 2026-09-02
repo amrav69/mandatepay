@@ -40,7 +40,8 @@ async fn main() {
 
     let app = build_router(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr: SocketAddr = format!("{host}:8080").parse().expect("invalid BIND_HOST");
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("port 8080 already in use");
