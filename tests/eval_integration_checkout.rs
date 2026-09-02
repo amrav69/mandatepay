@@ -470,12 +470,14 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let _body: Value = serde_json::from_slice(
+    let body: Value = serde_json::from_slice(
         &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
             .await
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(body["decision"], "ALLOW");
+    let order_id = body["order_id"].as_str().unwrap().to_string();
     let resp = app
         .oneshot(
             Request::builder()
@@ -496,6 +498,7 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
     )
     .unwrap();
     assert_eq!(body["decision"], "ALLOW");
+    assert_eq!(body["order_id"].as_str().unwrap(), order_id);
     assert!(
         body["reason"]
             .as_str()
