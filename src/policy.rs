@@ -41,6 +41,12 @@ pub fn evaluate(
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
     }
+    // M2: reject mandates that are too far in the future (clock skew / replay)
+    // 60 seconds leeway allows for minor drift between agent and server clocks
+    // but rejects future-dated mandates that could be used to bypass expiry.
+    if mandate.issued_at > unix_now() + 60 {
+        return reject("issued_at is too far in the future");
+    }
     if unix_now() >= mandate.expires_at {
         return reject("mandate expired");
     }

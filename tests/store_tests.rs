@@ -230,3 +230,54 @@ fn app_605_create_agent_just_inserted_not_panics() {
     assert_eq!(policy.agent_id, "new-agent");
     assert_eq!(policy.max_cap, 12345);
 }
+
+#[test]
+fn h3_amount_as_i64_overflow_rejected_not_wrapped() {
+    let db = Db::open(":memory:").unwrap();
+    // u64::MAX and i64::MAX+1 should be rejected, not silently wrapped to negative
+    let overflow = i64::MAX as u64 + 1;
+    let err = db.cache_order("mnd_h3", "order_h3", overflow).unwrap_err();
+    assert!(format!("{err}").contains("exceeds i64::MAX"));
+    let err2 = db.try_reserve_order("mnd_h3b", overflow).unwrap_err();
+    assert!(format!("{err2}").contains("exceeds i64::MAX"));
+    // Valid large but in-range should succeed
+    let ok_val = i64::MAX as u64;
+    db.cache_order("mnd_h3_ok", "order_ok", ok_val).unwrap();
+    assert_eq!(
+        db.get_cached_order("mnd_h3_ok").unwrap().as_deref(),
+        Some("order_ok")
+    );
+}
+
+#[test]
+fn m4_u32_and_u64_bounds_checked_no_wrap() {
+    // M4: as u32 / as u64 on DB values that could be out of range must error, not wrap.
+    // Insert a row with velocity_limit = u32::MAX as i64 + 1 (out of range) via raw SQL, then read via get_agent_policy
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m4.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL, velocity_limit INTEGER NOT NULL, velocity_window_secs INTEGER NOT NULL, allowed_merchants TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        // Insert a row with velocity_limit = 2^32 (too big for u32) and max_cap = -1 (negative for u64)
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES ('bad-agent', -5, 4294967296, -1, '[\"merchant-001\"]', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    // get_agent_policy on that row should error due to bounds check, not wrap to huge values
+    let res = db.get_agent_policy("bad-agent");
+    assert!(
+        res.is_err(),
+        "expected error for out-of-range velocity_limit/max_cap, got {res:?}"
+    );
+    // Also test that a valid row still works
+    let db2 = Db::open(":memory:").unwrap();
+    db2.get_or_create_agent("good-agent").unwrap();
+    let p = db2.get_agent_policy("good-agent").unwrap().unwrap();
+    assert_eq!(p.velocity_limit, 50);
+}

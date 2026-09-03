@@ -280,3 +280,36 @@ fn gateway_failure_rollback_makes_nonce_retryable() {
         "after gateway rollback, same nonce should be reclaimable"
     );
 }
+
+#[test]
+fn issued_at_future_leeway_rejects_large_skew_but_allows_small() {
+    // M2: 60s leeway for clock skew, beyond that reject as future-dated
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let now = unix_now();
+    // Small skew (30s in future) should be allowed
+    let mut m_ok = sample_mandate("n_future_ok");
+    m_ok.issued_at = now + 30;
+    m_ok.expires_at = now + 3600;
+    let sig_ok = auth.sign(&m_ok).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m_ok, &sig_ok, CAP, &allow, &db),
+            Decision::Allow { .. }
+        ),
+        "issued_at 30s in future (within 60s leeway) should be allowed"
+    );
+    // Large skew (61s in future) should be rejected
+    let mut m_bad = sample_mandate("n_future_bad");
+    m_bad.issued_at = now + 61;
+    m_bad.expires_at = now + 3600;
+    let sig_bad = auth.sign(&m_bad).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m_bad, &sig_bad, CAP, &allow, &db),
+            Decision::Reject { reason } if reason.contains("too far in the future")
+        ),
+        "issued_at 61s in future should be rejected"
+    );
+}

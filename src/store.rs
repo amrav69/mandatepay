@@ -35,6 +35,23 @@ pub struct AgentPolicy {
 
 pub struct Db(Mutex<Connection>);
 
+// M4: helpers for safe i64 -> u32/u64 conversion with explicit bounds check (no silent wrap)
+fn checked_u32(v: i64, field: &str) -> rusqlite::Result<u32> {
+    u32::try_from(v).map_err(|_| {
+        rusqlite::Error::InvalidColumnType(0, field.into(), rusqlite::types::Type::Integer)
+    })
+}
+fn checked_u64(v: i64, field: &str) -> rusqlite::Result<u64> {
+    if v < 0 {
+        return Err(rusqlite::Error::InvalidColumnType(
+            0,
+            field.into(),
+            rusqlite::types::Type::Integer,
+        ));
+    }
+    Ok(v as u64)
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +392,12 @@ impl Db {
         order_id: &str,
         amount: u64,
     ) -> rusqlite::Result<()> {
+        // H3: defense in depth — even though app.rs validates amount <= i64::MAX, also guard here
+        if amount > i64::MAX as u64 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "amount exceeds i64::MAX".into(),
+            ));
+        }
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, ?2, ?3, ?4, 'completed')",
@@ -386,6 +409,11 @@ impl Db {
     /// C4: atomic pending reservation claimed *before* gateway call.
     /// Returns true if reservation succeeded (we own the mandate), false if another request already holds it.
     pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
+        if amount > i64::MAX as u64 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "amount exceeds i64::MAX".into(),
+            ));
+        }
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute(
             "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, '__PENDING__', ?2, ?3, 'pending')",
@@ -438,9 +466,9 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -508,9 +536,9 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(Some(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -579,9 +607,9 @@ impl Db {
         let merchants: String = row.get(4)?;
         Ok(AgentPolicy {
             agent_id: row.get(0)?,
-            max_cap: row.get::<_, i64>(1)? as u64,
-            velocity_limit: row.get::<_, i64>(2)? as u32,
-            velocity_window_secs: row.get::<_, i64>(3)? as u64,
+            max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+            velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+            velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
             allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                 merchants
                     .split(',')
@@ -635,9 +663,9 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -697,9 +725,12 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: row.get::<_, i64>(1)? as u64,
-                    velocity_limit: row.get::<_, i64>(2)? as u32,
-                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                    velocity_window_secs: checked_u64(
+                        row.get::<_, i64>(3)?,
+                        "velocity_window_secs",
+                    )?,
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                         merchants
                             .split(',')
@@ -718,9 +749,12 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: row.get::<_, i64>(1)? as u64,
-                    velocity_limit: row.get::<_, i64>(2)? as u32,
-                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
+                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                    velocity_window_secs: checked_u64(
+                        row.get::<_, i64>(3)?,
+                        "velocity_window_secs",
+                    )?,
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                         merchants
                             .split(',')
