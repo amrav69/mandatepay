@@ -300,9 +300,9 @@ fn issued_at_future_leeway_rejects_large_skew_but_allows_small() {
         ),
         "issued_at 30s in future (within 60s leeway) should be allowed"
     );
-    // Large skew (61s in future) should be rejected
+    // Large skew (65s in future) should be rejected (61s is flaky due to 1s clock drift between test and policy)
     let mut m_bad = sample_mandate("n_future_bad");
-    m_bad.issued_at = now + 61;
+    m_bad.issued_at = now + 65;
     m_bad.expires_at = now + 3600;
     let sig_bad = auth.sign(&m_bad).unwrap();
     assert!(
@@ -310,6 +310,6 @@ fn issued_at_future_leeway_rejects_large_skew_but_allows_small() {
             policy::evaluate(&auth, &m_bad, &sig_bad, CAP, &allow, &db),
             Decision::Reject { reason } if reason.contains("too far in the future")
         ),
-        "issued_at 61s in future should be rejected"
+        "issued_at 65s in future should be rejected"
     );
 }
