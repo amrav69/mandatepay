@@ -50,6 +50,7 @@ mandatepay/
 │       ├── agent.rs       # Nemotron buyer: JSON proposals, wallet budget guard, deterministic fallback
 │       └── eval.rs        # 10-vector HTTP attack suite against live server
 ├── dashboard/index.html   # vanilla JS live decision stream, polling every 2s, replay viewer
+├── gen_card.py            # generates mandate_card.svg (verification terminal card)
 ├── tests/mandates_tests.rs
 └── .github/workflows/ci.yml  # fmt → clippy -D warnings → tests → live attack suite (CI_SEED)
 ```
