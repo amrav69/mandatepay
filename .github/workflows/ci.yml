@@ -38,6 +38,7 @@ jobs:
           cargo install cargo-audit --locked
           cargo audit
 
+      # continue-on-error is intentional for Buildathon timeline: cargo deny advisories are informational (see deny.toml), not blocking for demo
       - name: Deny
         continue-on-error: true
         run: |
