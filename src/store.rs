@@ -36,15 +36,15 @@ pub struct AgentPolicy {
 pub struct Db(Mutex<Connection>);
 
 // M4: helpers for safe i64 -> u32/u64 conversion with explicit bounds check (no silent wrap)
-fn checked_u32(v: i64, field: &str) -> rusqlite::Result<u32> {
+fn checked_u32(v: i64, col: usize, field: &str) -> rusqlite::Result<u32> {
     u32::try_from(v).map_err(|_| {
-        rusqlite::Error::InvalidColumnType(0, field.into(), rusqlite::types::Type::Integer)
+        rusqlite::Error::InvalidColumnType(col, field.into(), rusqlite::types::Type::Integer)
     })
 }
-fn checked_u64(v: i64, field: &str) -> rusqlite::Result<u64> {
+fn checked_u64(v: i64, col: usize, field: &str) -> rusqlite::Result<u64> {
     if v < 0 {
         return Err(rusqlite::Error::InvalidColumnType(
-            0,
+            col,
             field.into(),
             rusqlite::types::Type::Integer,
         ));
@@ -468,9 +468,13 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
-                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
+                velocity_window_secs: checked_u64(
+                    row.get::<_, i64>(3)?,
+                    3,
+                    "velocity_window_secs",
+                )?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -538,9 +542,13 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(Some(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
-                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
+                velocity_window_secs: checked_u64(
+                    row.get::<_, i64>(3)?,
+                    3,
+                    "velocity_window_secs",
+                )?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -609,9 +617,9 @@ impl Db {
         let merchants: String = row.get(4)?;
         Ok(AgentPolicy {
             agent_id: row.get(0)?,
-            max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-            velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
-            velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
+            max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+            velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
+            velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, 3, "velocity_window_secs")?,
             allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                 merchants
                     .split(',')
@@ -665,9 +673,13 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-                velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
-                velocity_window_secs: checked_u64(row.get::<_, i64>(3)?, "velocity_window_secs")?,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
+                velocity_window_secs: checked_u64(
+                    row.get::<_, i64>(3)?,
+                    3,
+                    "velocity_window_secs",
+                )?,
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -727,10 +739,11 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                    max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
                     velocity_window_secs: checked_u64(
                         row.get::<_, i64>(3)?,
+                        3,
                         "velocity_window_secs",
                     )?,
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
@@ -751,10 +764,11 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: checked_u64(row.get::<_, i64>(1)?, "max_cap")?,
-                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, "velocity_limit")?,
+                    max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
                     velocity_window_secs: checked_u64(
                         row.get::<_, i64>(3)?,
+                        3,
                         "velocity_window_secs",
                     )?,
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
