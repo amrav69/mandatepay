@@ -376,13 +376,32 @@ impl Db {
     }
 
     pub fn get_cached_order(&self, mandate_id: &str) -> rusqlite::Result<Option<String>> {
+        Ok(self
+            .get_cached_order_with_amount(mandate_id)?
+            .map(|(oid, _)| oid))
+    }
+
+    pub fn get_cached_order_with_amount(
+        &self,
+        mandate_id: &str,
+    ) -> rusqlite::Result<Option<(String, u64)>> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT order_id FROM orders WHERE mandate_id = ?1 AND status = 'completed'",
+            "SELECT order_id, amount FROM orders WHERE mandate_id = ?1 AND status = 'completed'",
         )?;
         let mut rows = stmt.query(params![mandate_id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(row.get(0)?))
+            let oid: String = row.get(0)?;
+            let amt: i64 = row.get(1)?;
+            // amount was validated <= i64::MAX on insert, but be defensive on read
+            if amt < 0 {
+                return Err(rusqlite::Error::InvalidColumnType(
+                    1,
+                    "amount".into(),
+                    rusqlite::types::Type::Integer,
+                ));
+            }
+            Ok(Some((oid, amt as u64)))
         } else {
             Ok(None)
         }

@@ -232,7 +232,10 @@ pub async fn checkout(
     // the cheap authz gates that would be checked anyway:
     //   1) authority.verify (signature)  2) expires_at  3) agent cap (already checked above)
     // This ensures a forged/unverified request can't hit a stale ALLOW cache.
-    if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+    if let Ok(Some((cached_id, cached_amount))) = state
+        .db
+        .get_cached_order_with_amount(&req.mandate.mandate_id)
+    {
         let verify_ok = state.authority.verify(&req.mandate, &req.signature).is_ok();
         let not_expired = mandates::unix_now() < req.mandate.expires_at;
         let allowlist_ok = allowed_merchants
@@ -242,11 +245,19 @@ pub async fn checkout(
             && req.amount_minor <= req.mandate.max_amount_minor
             && req.amount_minor <= agent_policy.max_cap
             && req.mandate.max_amount_minor <= agent_policy.max_cap;
-        if verify_ok && not_expired && allowlist_ok && amount_ok {
+        // Fix #1: also verify the cached amount matches the current request — otherwise
+        // the same mandate_id with a different (still valid) amount would silently return
+        // the wrong order for the amount the caller specified.
+        if verify_ok
+            && not_expired
+            && allowlist_ok
+            && amount_ok
+            && req.amount_minor == cached_amount
+        {
             return Ok(Json(DecisionResponse {
                 decision: "ALLOW".into(),
                 reason: "idempotent replay: cached order returned".into(),
-                order_id: Some(cached),
+                order_id: Some(cached_id),
                 gateway: state.gateway.label().into(),
             }));
         }
@@ -284,10 +295,16 @@ pub async fn checkout(
     let mut order_id = None;
     if matches!(decision, Decision::Allow { .. }) {
         // Second cache check: another concurrent Allow may have just completed and cached.
-        if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
-            order_id = Some(cached);
+        // Also verify cached amount matches current request (fix #1).
+        if let Ok(Some((cached_id, cached_amount))) = state
+            .db
+            .get_cached_order_with_amount(&req.mandate.mandate_id)
+            && req.amount_minor == cached_amount
+        {
+            order_id = Some(cached_id);
             reason = format!("{reason} (idempotent replay: cached order returned)");
-        } else {
+        }
+        if order_id.is_none() {
             // C4: atomic PENDING reservation *before* gateway call.
             // INSERT OR IGNORE with PRIMARY KEY on mandate_id guarantees only one concurrent
             // writer wins the reservation; losers see `false` and must not call gateway.
@@ -296,9 +313,26 @@ pub async fn checkout(
                 .try_reserve_order(&req.mandate.mandate_id, req.amount_minor)?;
             if !reserved {
                 // Lost reservation: someone else owns this mandate_id. If they already completed,
-                // return their cached order as idempotent replay; otherwise we're racing a pending
-                // order still being created -> reject as duplicate in flight (do not call gateway).
-                if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+                // return their cached order as idempotent replay (only if amount matches);
+                // otherwise we're racing a pending order still being created -> reject as duplicate.
+                if let Ok(Some((cached_id, cached_amount))) = state
+                    .db
+                    .get_cached_order_with_amount(&req.mandate.mandate_id)
+                {
+                    if req.amount_minor == cached_amount {
+                        order_id = Some(cached_id);
+                        reason = format!("{reason} (idempotent replay: cached order returned)");
+                    } else {
+                        if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
+                            tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight amount mismatch");
+                        }
+                        label = "REJECT";
+                        reason = "duplicate mandate_id: order already in flight (amount mismatch)"
+                            .into();
+                    }
+                } else if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id)
+                {
+                    // Fallback for legacy rows without amount
                     order_id = Some(cached);
                     reason = format!("{reason} (idempotent replay: cached order returned)");
                 } else {
@@ -364,8 +398,8 @@ pub async fn checkout(
     }))
 }
 
-pub async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+pub async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "status": "ok", "gateway": state.gateway.label() }))
 }
 
 #[derive(Deserialize)]

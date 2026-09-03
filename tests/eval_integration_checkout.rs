@@ -777,3 +777,112 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
         "retry should NOT be nonce replay if rollback works, got: {reason}"
     );
 }
+
+#[tokio::test]
+async fn idempotency_cache_amount_mismatch_not_returned() {
+    // Regression for src/app.rs:235-253 — early cache must also verify amount matches cached order.
+    // Same mandate_id with two different valid amounts: second checkout must NOT silently return the first cached order.
+    let (app, key) = test_app();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "idempotent-amount-test",
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 50000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mandate = body["mandate"].clone();
+    let sig = body["signature"].as_str().unwrap().to_string();
+
+    // First checkout with amount 1000 should be ALLOW and cache order with amount 1000
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "mandate": mandate, "signature": sig, "amount_minor": 1000 })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["decision"], "ALLOW");
+    let order_id_first = body["order_id"].as_str().unwrap().to_string();
+    assert!(body["reason"].as_str().unwrap().contains("passed"));
+
+    // Second checkout with SAME mandate_id/signature/nonce but different amount 2000
+    // Both amounts are individually valid (<= cap), but the second must NOT return the cached order for 1000.
+    // Correct behavior: fall through to try_claim_nonce and REJECT for nonce already consumed.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "mandate": mandate, "signature": sig, "amount_minor": 2000 })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        body["decision"], "REJECT",
+        "amount mismatch should be REJECT, not ALLOW with wrong order"
+    );
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("nonce already consumed"),
+        "should be nonce replay REJECT, got: {}",
+        body["reason"]
+    );
+    assert!(
+        body["order_id"].is_null() || body["order_id"].as_str().unwrap() != order_id_first,
+        "must not return cached order for different amount"
+    );
+}
