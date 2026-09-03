@@ -2,17 +2,15 @@
 targets = [{ triple = "x86_64-unknown-linux-gnu" }]
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
+# vulnerability/notice are now deny by default (see cargo-deny 0.20 migration)
 yanked = "warn"
-notice = "warn"
+unmaintained = "workspace"
 
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
