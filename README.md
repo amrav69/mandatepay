@@ -91,7 +91,7 @@ Mandate + signature + amount_minor ──POST /v1/checkout──▶ Policy Engin
 | **Authority** | Sign mandates with `SigningKey` | Decide if a spend is allowed |
 | **Policy Engine** | `ALLOW/REJECT` with reason | Move money |
 | **Gateway** | `POST https://api.razorpay.com/v1/orders` with basic auth | Override a `REJECT` |
-| **Store** | Enforce nonce uniqueness via `PRIMARY KEY` | Be bypassed — even a valid sig replays as `REJECT` |
+| **Store** | Enforce nonce uniqueness via `PRIMARY KEY` | Allow replay to succeed — even a valid signature replays as `REJECT` |
 
 **Two-factor — mandate + API key (deliberate):** `POST /v1/checkout` requires *both* a valid Ed25519 `signature` (proves *what* is authorized — bounded, expiring, single-use) *and* a valid `X-API-Key` (proves *who* may submit — the caller is an authorized agent, `src/app.rs:75` `require_api_key` with `subtle::ConstantTimeEq`). The signature alone would let anyone who steals a mandate replay it; the API key alone would let any caller mint any amount. Together they are the design, not a leftover — the dashboard's `localStorage` key is demo-only and never logged.
 
