@@ -268,7 +268,9 @@ pub async fn checkout(
     // even after the window cleared, which would be surprising. Documented behavior: velocity
     // rejections are retryable; gateway failures also rollback for same reason.
     if matches!(decision, Decision::Allow { .. }) && !state.db.check_velocity(agent_id)? {
-        let _ = state.db.rollback_nonce(&req.mandate.nonce);
+        if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
+            tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after velocity rejection");
+        }
         decision = Decision::Reject {
             reason: format!("velocity limit exceeded for agent {}", agent_id),
         };
@@ -305,7 +307,9 @@ pub async fn checkout(
                     // evaluate (Allow) but lost the pending race -> rollback so it remains clear
                     // that the duplicate was not processed. The winner's order will become
                     // visible for subsequent retries via the early cache above.
-                    let _ = state.db.rollback_nonce(&req.mandate.nonce);
+                    if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
+                        tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight rejection");
+                    }
                     // Note: we do not clear the winner's pending; winner will finalize.
                     label = "REJECT";
                     reason = "duplicate mandate_id: order already in flight".into();
@@ -317,14 +321,23 @@ pub async fn checkout(
                     .await
                 {
                     Ok(order) => {
-                        let _ = state
+                        if let Err(e) = state
                             .db
-                            .finalize_reserved_order(&req.mandate.mandate_id, &order.id);
+                            .finalize_reserved_order(&req.mandate.mandate_id, &order.id)
+                        {
+                            tracing::error!(error = %e, mandate_id = %req.mandate.mandate_id, "failed to finalize reserved order after gateway success");
+                        }
                         order_id = Some(order.id);
                     }
                     Err(e) => {
-                        let _ = state.db.clear_pending_order(&req.mandate.mandate_id);
-                        let _ = state.db.rollback_nonce(&req.mandate.nonce);
+                        if let Err(rollback_err) =
+                            state.db.clear_pending_order(&req.mandate.mandate_id)
+                        {
+                            tracing::error!(error = %rollback_err, mandate_id = %req.mandate.mandate_id, "failed to clear pending order after gateway failure");
+                        }
+                        if let Err(rollback_err) = state.db.rollback_nonce(&req.mandate.nonce) {
+                            tracing::error!(error = %rollback_err, nonce = %req.mandate.nonce, "failed to roll back nonce after gateway failure");
+                        }
                         reason = format!("{reason}; gateway: {e}");
                         label = "REJECT";
                     }

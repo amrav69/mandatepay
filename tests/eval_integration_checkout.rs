@@ -589,3 +589,191 @@ async fn agent_cap_below_mandate_cap_rejects_checkout() {
             .contains("exceeds agent cap")
     );
 }
+
+#[tokio::test]
+async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
+    // Regression for src/app.rs:271 let _ = rollback_nonce silently discarding Err
+    // and for the weak DB-only test at tests/mandates_tests.rs:192.
+    // This is an end-to-end test through axum Router, not just Db, so it would
+    // fail if the rollback call in app.rs were deleted.
+    let (app, key) = test_app();
+    let agent_id = "vel-e2e-rollback-test";
+
+    // Set velocity_limit = 1 for this agent so the second checkout hits the limit
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/v1/agents/{agent_id}"))
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "velocity_limit": 1, "velocity_window_secs": 60 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // First mandate + checkout should be ALLOW (consumes 1 velocity token)
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": agent_id,
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 50000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mandate1 = body["mandate"].clone();
+    let sig1 = body["signature"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "mandate": mandate1, "signature": sig1, "amount_minor": 1000 })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["decision"], "ALLOW", "first checkout should be ALLOW");
+
+    // Second mandate (different nonce) should be REJECT for velocity, not for replay
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": agent_id,
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 50000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mandate2 = body["mandate"].clone();
+    let sig2 = body["signature"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "mandate": mandate2, "signature": sig2, "amount_minor": 1000 })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["decision"], "REJECT");
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("velocity limit exceeded"),
+        "second checkout should be REJECT for velocity, got: {}",
+        body["reason"]
+    );
+
+    // Retry the SAME mandate2 (same nonce) again — with the fix, nonce was rolled back
+    // on velocity rejection, so this should again be REJECT for velocity, NOT for nonce replay.
+    // If the rollback in src/app.rs:271 were deleted, this would be REJECT "nonce already consumed".
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .header("x-api-key", &key)
+                .body(Body::from(
+                    json!({ "mandate": mandate2, "signature": sig2, "amount_minor": 1000 })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["decision"], "REJECT");
+    let reason = body["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("velocity limit exceeded"),
+        "retry of velocity-rejected mandate should still be velocity REJECT (nonce rolled back), not replay. Got: {reason}"
+    );
+    assert!(
+        !reason.contains("nonce already consumed"),
+        "retry should NOT be nonce replay if rollback works, got: {reason}"
+    );
+}

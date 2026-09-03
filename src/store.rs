@@ -238,7 +238,9 @@ impl Db {
                 Ok(())
             }
             Err(e) => {
-                let _ = conn.execute("ROLLBACK", []);
+                if let Err(rollback_err) = conn.execute("ROLLBACK", []) {
+                    tracing::error!(error = %rollback_err, "failed to rollback transaction after record_decision error");
+                }
                 Err(e)
             }
         }
