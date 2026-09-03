@@ -39,5 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix CI (`ci.yml`): `cargo deny` step now uses explicit `continue-on-error: true` instead of silent `|| true`
 - Chaos invariant corrected to `allow+reject==10, 1 unique order, allow>=1` (idempotent replay)
 - Removed `BUGS.md` — remaining items tracked via GitHub Issues
+- Fix H3/M4: `store.rs` `as i64`/`as u32` now `checked_u32`/`checked_u64` with explicit bounds (no silent wrap)
+- Fix M2: `policy.rs` `issued_at` future leeway 60s with regression test
+- Fix `tests/mandates_tests.rs:61->65s` flake: `issued_at` test now uses 65s not 61s for robustness
+- Fix `src/app.rs`/`store.rs` silent `let _ =` discards on rollback/clear → `tracing::error!` logging, plus e2e `velocity_reject_rolls_back_nonce_so_retry_not_replay` test
 - Per-agent merchant allowlist management API
 - Structured JSON logging already via `tracing` + `tracing-subscriber`
