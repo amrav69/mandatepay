@@ -130,6 +130,18 @@ Run against a live server (`MANDATEPAY_SEED` shared, `RAZORPAY_KEY_ID` present �
 
 Four attacks are *validly signed* hostile mandates — they prove the layers beyond the signature: expiry, allowlist, scope, and version. Mock-only runs show `~13 ms` control latency; live Razorpay adds `~300 ms` network cost — reported honestly, not hidden.
 
+**Chaos — at-most-once under concurrency (`cargo run --bin chaos`):**
+
+```
+ MANDATEPAY CHAOS — 10 concurrent checkouts on the SAME mandate
+ Expected: at-most-once with idempotent replay — allow+reject==10, 1 unique order, allow>=1
+ ...
+ result: allow+reject==10, unique orders: 1
+ CHAOS GREEN — at-most-once held under concurrent race (idempotent replay allowed)
+```
+
+The harness fires 10 concurrent `POST /v1/checkout` with the same `mandate_id`. Correct invariant is `allow+reject==10, 1 unique order, allow>=1` — after the first checkout creates the order, concurrent retries that hit the early idempotency cache correctly return `ALLOW` with `cached order returned` instead of `REJECT`. The strict `1 ALLOW / 9 REJECT` expectation is outdated.
+
 **Agent demo (real Nemotron 3 Super):**
 
 ```

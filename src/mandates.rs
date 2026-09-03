@@ -1,4 +1,7 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as TOKEN_B64},
+};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,7 +52,8 @@ pub fn unix_now() -> u64 {
 pub fn new_token(prefix: &str, entropy_bytes: usize) -> String {
     let mut buf = vec![0u8; entropy_bytes];
     getrandom::fill(&mut buf).expect("os randomness unavailable");
-    format!("{prefix}{}", B64.encode(buf))
+    // Use URL_SAFE_NO_PAD so mandate_id/nonce are safe in URL paths, query params and headers (no +/=).
+    format!("{prefix}{}", TOKEN_B64.encode(buf))
 }
 
 pub struct Authority {

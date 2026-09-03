@@ -261,7 +261,14 @@ pub async fn checkout(
         &state.db,
     );
 
+    // Velocity: if policy Allow but velocity exceeded, override to Reject.
+    // Nonce was already claimed inside evaluate() -> rollback so the mandate remains retryable
+    // after the velocity window. This is intentional: velocity is a rate limit, not a mandate
+    // validity verdict. Without rollback, a velocity-rejected mandate could never be retried
+    // even after the window cleared, which would be surprising. Documented behavior: velocity
+    // rejections are retryable; gateway failures also rollback for same reason.
     if matches!(decision, Decision::Allow { .. }) && !state.db.check_velocity(agent_id)? {
+        let _ = state.db.rollback_nonce(&req.mandate.nonce);
         decision = Decision::Reject {
             reason: format!("velocity limit exceeded for agent {}", agent_id),
         };
@@ -274,26 +281,53 @@ pub async fn checkout(
 
     let mut order_id = None;
     if matches!(decision, Decision::Allow { .. }) {
+        // Second cache check: another concurrent Allow may have just completed and cached.
         if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
             order_id = Some(cached);
             reason = format!("{reason} (idempotent replay: cached order returned)");
         } else {
-            match state
-                .gateway
-                .create_order(&req.mandate, req.amount_minor)
-                .await
-            {
-                Ok(order) => {
-                    let _ =
-                        state
-                            .db
-                            .cache_order(&req.mandate.mandate_id, &order.id, req.amount_minor);
-                    order_id = Some(order.id);
-                }
-                Err(e) => {
+            // C4: atomic PENDING reservation *before* gateway call.
+            // INSERT OR IGNORE with PRIMARY KEY on mandate_id guarantees only one concurrent
+            // writer wins the reservation; losers see `false` and must not call gateway.
+            let reserved = state
+                .db
+                .try_reserve_order(&req.mandate.mandate_id, req.amount_minor)?;
+            if !reserved {
+                // Lost reservation: someone else owns this mandate_id. If they already completed,
+                // return their cached order as idempotent replay; otherwise we're racing a pending
+                // order still being created -> reject as duplicate in flight (do not call gateway).
+                if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id) {
+                    order_id = Some(cached);
+                    reason = format!("{reason} (idempotent replay: cached order returned)");
+                } else {
+                    // Pending but not yet completed: treat as duplicate. Nonce was already
+                    // claimed for the winner, this loser already consumed a nonce claim in
+                    // evaluate (Allow) but lost the pending race -> rollback so it remains clear
+                    // that the duplicate was not processed. The winner's order will become
+                    // visible for subsequent retries via the early cache above.
                     let _ = state.db.rollback_nonce(&req.mandate.nonce);
-                    reason = format!("{reason}; gateway: {e}");
+                    // Note: we do not clear the winner's pending; winner will finalize.
                     label = "REJECT";
+                    reason = "duplicate mandate_id: order already in flight".into();
+                }
+            } else {
+                match state
+                    .gateway
+                    .create_order(&req.mandate, req.amount_minor)
+                    .await
+                {
+                    Ok(order) => {
+                        let _ = state
+                            .db
+                            .finalize_reserved_order(&req.mandate.mandate_id, &order.id);
+                        order_id = Some(order.id);
+                    }
+                    Err(e) => {
+                        let _ = state.db.clear_pending_order(&req.mandate.mandate_id);
+                        let _ = state.db.rollback_nonce(&req.mandate.nonce);
+                        reason = format!("{reason}; gateway: {e}");
+                        label = "REJECT";
+                    }
                 }
             }
         }
@@ -438,19 +472,11 @@ pub async fn list_agents(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
     let offset = params.offset.unwrap_or(0).max(0);
+    // M5: filter in SQL, not in-memory pagination, so LIMIT/OFFSET applies to filtered set.
     let mut agents = state
         .db
-        .list_agents_paginated(limit, offset)
+        .list_agents_paginated_filtered(limit, offset, params.q.as_deref())
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    if let Some(q) = params
-        .q
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
-        let needle = q.to_lowercase();
-        agents.retain(|a| a.agent_id.to_lowercase().contains(&needle));
-    }
     let sort = params.sort.as_deref().unwrap_or("agent_id");
     let desc = params
         .order
@@ -602,7 +628,7 @@ pub async fn create_agent(
         .db
         .get_agent_policy(id)
         .map_err(|e| AppError::Internal(e.to_string()))?
-        .expect("just inserted");
+        .ok_or_else(|| AppError::Internal("just inserted agent not found".into()))?;
     Ok(Json(json!(policy)))
 }
 

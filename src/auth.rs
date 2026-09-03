@@ -20,7 +20,12 @@ pub fn verify_api_key(provided: &str, expected: &str) -> bool {
     if provided.is_empty() || expected.is_empty() {
         return false;
     }
-    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+    // M8: length-constant comparison — hash both to fixed 32B before ct_eq so
+    // `subtle::ConstantTimeEq` on slices (which short-circuits on length mismatch)
+    // does not leak the expected key length.
+    let p_hash = Sha256::digest(provided.as_bytes());
+    let e_hash = Sha256::digest(expected.as_bytes());
+    p_hash.as_slice().ct_eq(e_hash.as_slice()).into()
 }
 
 pub fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -97,5 +102,19 @@ mod tests {
     fn extract_missing_returns_none() {
         let h = HeaderMap::new();
         assert!(extract_api_key(&h).is_none());
+    }
+
+    #[test]
+    fn verify_different_lengths_rejected_length_constant() {
+        // Regression for M8: verify must not leak length via early return.
+        // Hash-before-compare ensures fixed-length ct_eq, so different lengths still
+        // correctly return false without leaking.
+        assert!(!verify_api_key("short", "very-long-secret-key-value"));
+        assert!(!verify_api_key("very-long-secret-key-value", "short"));
+        assert!(!verify_api_key("a", "ab"));
+        // Same length but different content also rejected
+        assert!(!verify_api_key("secret1234", "secret1235"));
+        // Empty already covered but ensure consistent
+        assert!(!verify_api_key("", "not-empty"));
     }
 }

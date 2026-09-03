@@ -39,9 +39,10 @@ jobs:
           cargo audit
 
       - name: Deny
+        continue-on-error: true
         run: |
           cargo install cargo-deny --locked
-          cargo deny check advisories || true
+          cargo deny check advisories
 
       - name: Attack suite against live server
         run: |

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS orders (
     mandate_id TEXT PRIMARY KEY,
     order_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'completed'
 );
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
@@ -74,9 +75,101 @@ CREATE TABLE IF NOT EXISTS agent_velocity (
 ";
 
 impl Db {
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(name)
+        })?;
+        for name in rows {
+            if name? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // C2 migration: handle DBs created before audit_hash/prev_hash and before orders.status
+        // Use both user_version and column existence for idempotency across upgrades.
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
+        // Migration v1: audit_hash / prev_hash columns (pre-0.1.0 DBs)
+        let has_audit = Self::column_exists(&conn, "decisions", "audit_hash")?;
+        if !has_audit {
+            conn.execute(
+                "ALTER TABLE decisions ADD COLUMN audit_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        let has_prev = Self::column_exists(&conn, "decisions", "prev_hash")?;
+        if !has_prev {
+            conn.execute(
+                "ALTER TABLE decisions ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        // Migration v2: orders.status for C4 pending reservation
+        let has_status = Self::column_exists(&conn, "orders", "status")?;
+        if !has_status {
+            conn.execute(
+                "ALTER TABLE orders ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
+                [],
+            )?;
+        }
+        // Backfill legacy audit_hash chain if any row still has empty hash (DB upgraded from pre-chain version)
+        let empty_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE audit_hash = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if empty_count > 0 {
+            let mut stmt = conn.prepare(
+                "SELECT id, ts, endpoint, decision, reason, payload FROM decisions ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?;
+            let collected: Vec<(i64, i64, String, String, String, String)> =
+                rows.collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut prev = String::new();
+            for (id, ts, endpoint, decision, reason, payload) in collected {
+                let mut hasher = Sha256::new();
+                hasher.update(prev.as_bytes());
+                hasher.update(b"|");
+                hasher.update(endpoint.as_bytes());
+                hasher.update(b"|");
+                hasher.update(decision.as_bytes());
+                hasher.update(b"|");
+                hasher.update(reason.as_bytes());
+                hasher.update(b"|");
+                hasher.update(payload.as_bytes());
+                hasher.update(b"|");
+                hasher.update(ts.to_be_bytes());
+                let hash = hex::encode(hasher.finalize());
+                conn.execute(
+                    "UPDATE decisions SET audit_hash = ?1, prev_hash = ?2 WHERE id = ?3",
+                    params![hash, prev, id],
+                )?;
+                prev = hash;
+            }
+        }
+        if version < 2 {
+            conn.execute_batch("PRAGMA user_version = 2")?;
+        }
         Ok(Db(Mutex::new(conn)))
     }
 
@@ -87,40 +180,55 @@ impl Db {
         reason: &str,
         payload: &str,
     ) -> rusqlite::Result<()> {
-        let conn = self.0.lock().expect("decision ledger poisoned");
-        let ts = unix_now() as i64;
-        let prev_hash: String = conn
-            .query_row(
-                "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
-        let mut hasher = Sha256::new();
-        hasher.update(prev_hash.as_bytes());
-        hasher.update(b"|");
-        hasher.update(endpoint.as_bytes());
-        hasher.update(b"|");
-        hasher.update(decision.as_bytes());
-        hasher.update(b"|");
-        hasher.update(reason.as_bytes());
-        hasher.update(b"|");
-        hasher.update(payload.as_bytes());
-        hasher.update(b"|");
-        hasher.update(ts.to_be_bytes());
-        let audit_hash = hex::encode(hasher.finalize());
-        conn.execute(
-            "INSERT INTO decisions (ts, endpoint, decision, reason, payload, audit_hash, prev_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                ts, endpoint, decision, reason, payload, audit_hash, prev_hash
-            ],
-        )?;
-        Ok(())
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // H1: wrap read-modify-write in BEGIN IMMEDIATE so concurrent writers serialize at SQLite level
+        // and cannot fork the hash chain (read prev_hash -> compute -> insert).
+        conn.execute("BEGIN IMMEDIATE", [])?;
+        let result: rusqlite::Result<()> = (|| {
+            let ts = unix_now() as i64;
+            let prev_hash: String = conn
+                .query_row(
+                    "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            let mut hasher = Sha256::new();
+            hasher.update(prev_hash.as_bytes());
+            hasher.update(b"|");
+            hasher.update(endpoint.as_bytes());
+            hasher.update(b"|");
+            hasher.update(decision.as_bytes());
+            hasher.update(b"|");
+            hasher.update(reason.as_bytes());
+            hasher.update(b"|");
+            hasher.update(payload.as_bytes());
+            hasher.update(b"|");
+            hasher.update(ts.to_be_bytes());
+            let audit_hash = hex::encode(hasher.finalize());
+            conn.execute(
+                "INSERT INTO decisions (ts, endpoint, decision, reason, payload, audit_hash, prev_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    ts, endpoint, decision, reason, payload, audit_hash, prev_hash
+                ],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
     }
 
     pub fn try_claim_nonce(&self, nonce: &str) -> rusqlite::Result<bool> {
-        let conn = self.0.lock().expect("nonce ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute(
             "INSERT OR IGNORE INTO nonces (nonce, claimed_at) VALUES (?1, ?2)",
             params![nonce, unix_now() as i64],
@@ -129,13 +237,13 @@ impl Db {
     }
 
     pub fn rollback_nonce(&self, nonce: &str) -> rusqlite::Result<()> {
-        let conn = self.0.lock().expect("nonce ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM nonces WHERE nonce = ?1", params![nonce])?;
         Ok(())
     }
 
     pub fn list_recent(&self, limit: i64) -> rusqlite::Result<Vec<DecisionRow>> {
-        let conn = self.0.lock().expect("decision ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id DESC LIMIT ?1",
         )?;
@@ -157,7 +265,7 @@ impl Db {
     }
 
     pub fn get_decision(&self, id: i64) -> rusqlite::Result<Option<DecisionRow>> {
-        let conn = self.0.lock().expect("decision ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions WHERE id = ?1",
         )?;
@@ -179,7 +287,7 @@ impl Db {
     }
 
     pub fn verify_chain(&self) -> rusqlite::Result<bool> {
-        let conn = self.0.lock().expect("decision ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id ASC",
         )?;
@@ -223,7 +331,7 @@ impl Db {
     }
 
     pub fn stats(&self) -> rusqlite::Result<LedgerStats> {
-        let conn = self.0.lock().expect("decision ledger poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0))?;
         let allow: i64 = conn.query_row(
             "SELECT COUNT(*) FROM decisions WHERE decision='ALLOW'",
@@ -249,8 +357,10 @@ impl Db {
     }
 
     pub fn get_cached_order(&self, mandate_id: &str) -> rusqlite::Result<Option<String>> {
-        let conn = self.0.lock().expect("order cache poisoned");
-        let mut stmt = conn.prepare("SELECT order_id FROM orders WHERE mandate_id = ?1")?;
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT order_id FROM orders WHERE mandate_id = ?1 AND status = 'completed'",
+        )?;
         let mut rows = stmt.query(params![mandate_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -265,16 +375,61 @@ impl Db {
         order_id: &str,
         amount: u64,
     ) -> rusqlite::Result<()> {
-        let conn = self.0.lock().expect("order cache poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, ?2, ?3, ?4, 'completed')",
             params![mandate_id, order_id, amount as i64, unix_now() as i64],
         )?;
         Ok(())
     }
 
+    /// C4: atomic pending reservation claimed *before* gateway call.
+    /// Returns true if reservation succeeded (we own the mandate), false if another request already holds it.
+    pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, '__PENDING__', ?2, ?3, 'pending')",
+            params![mandate_id, amount as i64, unix_now() as i64],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn finalize_reserved_order(
+        &self,
+        mandate_id: &str,
+        order_id: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE orders SET order_id = ?1, status = 'completed' WHERE mandate_id = ?2 AND status = 'pending'",
+            params![order_id, mandate_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_pending_order(&self, mandate_id: &str) -> rusqlite::Result<()> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM orders WHERE mandate_id = ?1 AND status = 'pending'",
+            params![mandate_id],
+        )?;
+        Ok(())
+    }
+
+    /// Returns order status for debugging; None if no row. Used in tests.
+    pub fn get_order_status(&self, mandate_id: &str) -> rusqlite::Result<Option<(String, String)>> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT order_id, status FROM orders WHERE mandate_id = ?1")?;
+        let mut rows = stmt.query(params![mandate_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn get_or_create_agent(&self, agent_id: &str) -> rusqlite::Result<AgentPolicy> {
-        let conn = self.0.lock().expect("agent policy poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1"
         )?;
@@ -312,7 +467,7 @@ impl Db {
     }
 
     pub fn check_velocity(&self, agent_id: &str) -> rusqlite::Result<bool> {
-        let conn = self.0.lock().expect("velocity poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = unix_now();
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
@@ -344,7 +499,7 @@ impl Db {
     }
 
     pub fn get_agent_policy(&self, agent_id: &str) -> rusqlite::Result<Option<AgentPolicy>> {
-        let conn = self.0.lock().expect("agent policy poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1"
         )?;
@@ -369,6 +524,7 @@ impl Db {
         }
     }
 
+    /// H8: atomic UPDATE without read-modify-write race. Only supplied fields are updated.
     pub fn update_agent(
         &self,
         agent_id: &str,
@@ -377,34 +533,63 @@ impl Db {
         velocity_window_secs: Option<u64>,
         allowed_merchants: Option<Vec<String>>,
     ) -> rusqlite::Result<AgentPolicy> {
-        let mut policy = self.get_or_create_agent(agent_id)?;
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Ensure row exists first (atomic insert) then update only provided columns.
+        let now = unix_now() as i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
+            params![agent_id, now],
+        )?;
+        // Build dynamic UPDATE with COALESCE-like behavior: update only Some values.
+        // Use separate executes to keep it single atomic transaction per caller lock.
+        // Each field is updated atomically inside the mutex, no read-modify-write across threads losing updates.
         if let Some(v) = max_cap {
-            policy.max_cap = v;
+            conn.execute(
+                "UPDATE agents SET max_cap = ?1, updated_at = ?2 WHERE agent_id = ?3",
+                params![v as i64, unix_now() as i64, agent_id],
+            )?;
         }
         if let Some(v) = velocity_limit {
-            policy.velocity_limit = v;
+            conn.execute(
+                "UPDATE agents SET velocity_limit = ?1, updated_at = ?2 WHERE agent_id = ?3",
+                params![v as i64, unix_now() as i64, agent_id],
+            )?;
         }
         if let Some(v) = velocity_window_secs {
-            policy.velocity_window_secs = v;
+            conn.execute(
+                "UPDATE agents SET velocity_window_secs = ?1, updated_at = ?2 WHERE agent_id = ?3",
+                params![v as i64, unix_now() as i64, agent_id],
+            )?;
         }
         if let Some(v) = allowed_merchants {
-            policy.allowed_merchants = v;
+            let merchants = serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string());
+            conn.execute(
+                "UPDATE agents SET allowed_merchants = ?1, updated_at = ?2 WHERE agent_id = ?3",
+                params![merchants, unix_now() as i64, agent_id],
+            )?;
+        } else if max_cap.is_none() && velocity_limit.is_none() && velocity_window_secs.is_none() {
+            // Touch updated_at even if no field changed? Not needed, but keep idempotency.
         }
-        let conn = self.0.lock().expect("agent policy poisoned");
-        let merchants =
-            serde_json::to_string(&policy.allowed_merchants).unwrap_or_else(|_| "[]".to_string());
-        conn.execute(
-            "UPDATE agents SET max_cap = ?1, velocity_limit = ?2, velocity_window_secs = ?3, allowed_merchants = ?4, updated_at = ?5 WHERE agent_id = ?6",
-            params![
-                policy.max_cap as i64,
-                policy.velocity_limit as i64,
-                policy.velocity_window_secs as i64,
-                merchants,
-                unix_now() as i64,
-                agent_id
-            ],
+        // Fetch updated row
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1",
         )?;
-        Ok(policy)
+        let mut rows = stmt.query(params![agent_id])?;
+        let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let merchants: String = row.get(4)?;
+        Ok(AgentPolicy {
+            agent_id: row.get(0)?,
+            max_cap: row.get::<_, i64>(1)? as u64,
+            velocity_limit: row.get::<_, i64>(2)? as u32,
+            velocity_window_secs: row.get::<_, i64>(3)? as u64,
+            allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                merchants
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }),
+        })
     }
 
     /// Atomic insert for `POST /v1/agents` — returns `true` if a new row was inserted,
@@ -425,7 +610,7 @@ impl Db {
             Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
             None => r#"["merchant-001"]"#.to_string(),
         };
-        let conn = self.0.lock().expect("agent policy poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = unix_now() as i64;
         let changed = conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -442,7 +627,7 @@ impl Db {
     }
 
     pub fn list_agents(&self) -> rusqlite::Result<Vec<AgentPolicy>> {
-        let conn = self.0.lock().expect("agent policy poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY agent_id ASC",
         )?;
@@ -466,7 +651,7 @@ impl Db {
     }
 
     pub fn delete_agent(&self, agent_id: &str) -> rusqlite::Result<bool> {
-        let conn = self.0.lock().expect("agent policy poisoned");
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute("DELETE FROM agents WHERE agent_id = ?1", params![agent_id])?;
         conn.execute(
             "DELETE FROM agent_velocity WHERE agent_id = ?1",
@@ -480,26 +665,72 @@ impl Db {
         limit: i64,
         offset: i64,
     ) -> rusqlite::Result<Vec<AgentPolicy>> {
-        let conn = self.0.lock().expect("agent policy poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY agent_id ASC LIMIT ?1 OFFSET ?2",
-        )?;
-        let rows = stmt.query_map(params![limit, offset], |row| {
-            let merchants: String = row.get(4)?;
-            Ok(AgentPolicy {
-                agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                    merchants
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                }),
-            })
-        })?;
-        rows.collect()
+        // M5 legacy entrypoint kept for callers without search; delegates to filtered version with empty q.
+        self.list_agents_paginated_filtered(limit, offset, None)
+    }
+
+    /// M5: filter in SQL so pagination window correctly reflects matches.
+    pub fn list_agents_paginated_filtered(
+        &self,
+        limit: i64,
+        offset: i64,
+        q: Option<&str>,
+    ) -> rusqlite::Result<Vec<AgentPolicy>> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let filtered = q
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if let Some(needle) = filtered {
+            // Use LIKE with ESCAPE to handle % and _ safely; lowercase comparison for case-insensitive.
+            let pattern = format!(
+                "%{}%",
+                needle
+                    .to_lowercase()
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            let mut stmt = conn.prepare(
+                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE LOWER(agent_id) LIKE ?1 ESCAPE '\\' ORDER BY agent_id ASC LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = stmt.query_map(params![pattern, limit, offset], |row| {
+                let merchants: String = row.get(4)?;
+                Ok(AgentPolicy {
+                    agent_id: row.get(0)?,
+                    max_cap: row.get::<_, i64>(1)? as u64,
+                    velocity_limit: row.get::<_, i64>(2)? as u32,
+                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                        merchants
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    }),
+                })
+            })?;
+            rows.collect()
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY agent_id ASC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = stmt.query_map(params![limit, offset], |row| {
+                let merchants: String = row.get(4)?;
+                Ok(AgentPolicy {
+                    agent_id: row.get(0)?,
+                    max_cap: row.get::<_, i64>(1)? as u64,
+                    velocity_limit: row.get::<_, i64>(2)? as u32,
+                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                        merchants
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    }),
+                })
+            })?;
+            rows.collect()
+        }
     }
 }

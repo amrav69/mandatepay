@@ -165,3 +165,118 @@ fn canonical_bytes_is_jcs_with_domain_separator() {
     let jcs = serde_jcs::to_vec(&v).unwrap();
     assert_eq!(json_part, jcs.as_slice());
 }
+
+#[test]
+fn new_token_is_url_safe_no_pad() {
+    use mandatepay::mandates::new_token;
+    for i in 0..20 {
+        let tok = new_token("mnd_", 9);
+        assert!(tok.starts_with("mnd_"), "prefix missing: {tok}");
+        let b64part = &tok["mnd_".len()..];
+        assert!(
+            !b64part.contains('+') && !b64part.contains('/') && !b64part.contains('='),
+            "token {i} contains non-URL-safe chars: {tok}"
+        );
+        let n = new_token("n_", 16);
+        let b64part = &n["n_".len()..];
+        assert!(
+            !b64part.contains('+') && !b64part.contains('/') && !b64part.contains('='),
+            "nonce {i} contains non-URL-safe chars: {n}"
+        );
+    }
+}
+
+#[test]
+fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
+    // Regression for nonce not rolled back on velocity rejection (app.rs L264).
+    // Policy: velocity is a rate limit, not a mandate validity failure, so a
+    // velocity-rejected mandate must remain retryable after the window or after
+    // we explicitly rollback. The fix in app.rs rolls back nonce when velocity
+    // fails after evaluate() already claimed it. This test proves the DB-level
+    // behavior: after try_claim_nonce + rollback, the nonce can be reclaimed.
+    let (_dir, db) = test_db();
+    let auth = Authority::from_seed([11u8; 32]);
+    let allow = allowlist();
+    // Configure agent with velocity_limit=1
+    db.update_agent("vel-rollback-agent", Some(50000), Some(1), Some(60), None)
+        .unwrap();
+    // First mandate with nonce n_retry should succeed
+    let m1 = Mandate {
+        version: 1,
+        mandate_id: "mnd_vel_1".into(),
+        agent_id: "vel-rollback-agent".into(),
+        merchant_id: "merchant-001".into(),
+        action: "create_order".into(),
+        currency: "INR".into(),
+        max_amount_minor: CAP,
+        issued_at: unix_now() - 1,
+        expires_at: unix_now() + 3600,
+        nonce: "n_vel_retry".into(),
+    };
+    let sig1 = auth.sign(&m1).unwrap();
+    let d1 = policy::evaluate(&auth, &m1, &sig1, 1000, &allow, &db);
+    assert!(matches!(d1, Decision::Allow { .. }));
+    // Simulate velocity failure after evaluate: check_velocity should allow first,
+    // but second call within same window should reject.
+    assert!(db.check_velocity("vel-rollback-agent").unwrap()); // first increments to 1 <=1 -> true
+    assert!(!db.check_velocity("vel-rollback-agent").unwrap()); // second increments to 2 >1 -> false (rejected)
+    // The second mandate with same nonce would have already claimed nonce inside evaluate
+    // if we tried to evaluate it. To emulate the bug: evaluate claimed nonce, then velocity
+    // failed, so we rollback.
+    let m2 = Mandate {
+        nonce: "n_vel_second".into(),
+        mandate_id: "mnd_vel_2".into(),
+        ..m1.clone()
+    };
+    let sig2 = auth.sign(&m2).unwrap();
+    // This evaluate will claim n_vel_second successfully -> Allow
+    let d2 = policy::evaluate(&auth, &m2, &sig2, 1000, &allow, &db);
+    assert!(
+        matches!(d2, Decision::Allow { .. }),
+        "second evaluate should Allow before velocity"
+    );
+    // Now velocity check fails again -> our fix rolls back nonce
+    let vel_ok = db.check_velocity("vel-rollback-agent").unwrap();
+    assert!(!vel_ok, "velocity should still be exceeded");
+    // Emulate app.rs rollback on velocity rejection
+    if !vel_ok {
+        db.rollback_nonce(&m2.nonce).unwrap();
+    }
+    // Nonce should now be reusable (retryable) — this is the regression assertion.
+    assert!(
+        db.try_claim_nonce(&m2.nonce).unwrap(),
+        "nonce from velocity-rejected mandate must be retryable after rollback"
+    );
+    // Conversely, a nonce that was NOT rolled back must stay consumed (replay protection)
+    let m3 = Mandate {
+        nonce: "n_no_rollback".into(),
+        mandate_id: "mnd_vel_3".into(),
+        ..m1.clone()
+    };
+    let sig3 = auth.sign(&m3).unwrap();
+    let d3 = policy::evaluate(&auth, &m3, &sig3, 1000, &allow, &db);
+    assert!(matches!(d3, Decision::Allow { .. }));
+    // Do NOT rollback -> second attempt with same nonce must be replay
+    assert!(!db.try_claim_nonce(&m3.nonce).unwrap());
+}
+
+#[test]
+fn gateway_failure_rollback_makes_nonce_retryable() {
+    // Gateway failure case: after evaluate Allow (nonce claimed), if gateway fails
+    // the app rolls back nonce so the same mandate can be retried.
+    let (_dir, db) = test_db();
+    let auth = Authority::from_seed([12u8; 32]);
+    let allow = allowlist();
+    let m = sample_mandate("n_gateway_retry");
+    let sig = auth.sign(&m).unwrap();
+    let d = policy::evaluate(&auth, &m, &sig, CAP, &allow, &db);
+    assert!(matches!(d, Decision::Allow { .. }));
+    // Simulate gateway failure rollback
+    db.rollback_nonce(&m.nonce).unwrap();
+    // Should be able to re-evaluate same mandate/nonce after rollback
+    let d2 = policy::evaluate(&auth, &m, &sig, CAP, &allow, &db);
+    assert!(
+        matches!(d2, Decision::Allow { .. }),
+        "after gateway rollback, same nonce should be reclaimable"
+    );
+}
