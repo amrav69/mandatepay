@@ -253,19 +253,24 @@ impl Db {
         reason: &str,
         payload: &str,
     ) -> rusqlite::Result<()> {
-        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        // H1: wrap read-modify-write in BEGIN IMMEDIATE so concurrent writers serialize at SQLite level
-        // and cannot fork the hash chain (read prev_hash -> compute -> insert).
-        conn.execute("BEGIN IMMEDIATE", [])?;
+        // M7: rusqlite Transaction API (IMMEDIATE) instead of manual BEGIN/COMMIT
+        // strings, so a COMMIT failure also rolls back and cannot leave the
+        // connection stuck inside a transaction. The Mutex still serializes
+        // threads; the transaction serializes at SQLite level (no chain fork).
+        let mut conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let result: rusqlite::Result<()> = (|| {
             let ts = unix_now() as i64;
-            let prev_hash: String = conn
-                .query_row(
-                    "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default();
+            // Empty table (genesis) -> ""; real DB errors propagate (M-prev_hash).
+            let prev_hash: String = match tx.query_row(
+                "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            ) {
+                Ok(h) => h,
+                Err(rusqlite::Error::QueryReturnedNoRows) => String::new(),
+                Err(e) => return Err(e),
+            };
             let mut hasher = Sha256::new();
             hasher.update(prev_hash.as_bytes());
             hasher.update(b"|");
@@ -279,7 +284,7 @@ impl Db {
             hasher.update(b"|");
             hasher.update(ts.to_be_bytes());
             let audit_hash = hex::encode(hasher.finalize());
-            conn.execute(
+            tx.execute(
                 "INSERT INTO decisions (ts, endpoint, decision, reason, payload, audit_hash, prev_hash)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
@@ -289,14 +294,14 @@ impl Db {
             Ok(())
         })();
         match result {
-            Ok(()) => {
-                conn.execute("COMMIT", [])?;
-                Ok(())
-            }
+            Ok(()) => tx.commit().map_err(|e| {
+                tracing::error!(error = %e, "failed to commit record_decision transaction");
+                e
+            }),
             Err(e) => {
-                if let Err(rollback_err) = conn.execute("ROLLBACK", []) {
-                    tracing::error!(error = %rollback_err, "failed to rollback transaction after record_decision error");
-                }
+                // Dropping `tx` without commit rolls back automatically; log explicitly.
+                tracing::error!(error = %e, "record_decision failed, transaction rolled back");
+                drop(tx);
                 Err(e)
             }
         }
