@@ -1,4 +1,6 @@
-FROM rust:1.85-slim-bookworm AS builder
+# C5: 1.85 cannot build this repo (locked deps require rustc 1.86-1.88+,
+# and let-chains require 1.88+). Keep in sync with Cargo.toml rust-version.
+FROM rust:1.89-slim-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

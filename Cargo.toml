@@ -2,6 +2,8 @@
 name = "mandatepay"
 version = "0.1.0"
 edition = "2024"
+# C5: floor for let-chains (stabilized 1.88) and locked deps (validator/darling/icu require 1.86-1.88).
+rust-version = "1.88"
 default-run = "mandatepay"
 
 [dependencies]
