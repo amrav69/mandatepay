@@ -43,16 +43,21 @@ mandatepay/
 ├── src/
 │   ├── mandates.rs        # Mandate schema, canonical bytes, Ed25519 sign/verify
 │   ├── policy.rs          # 13-gate evaluation: version/action/currency/max>0/expires>issued/ids/issued-leeway/expiry/sig/allowlist/amount>0/amount<=cap/nonce
-│   ├── store.rs           # SQLite ledger: decisions + nonces + stats
+│   ├── store.rs           # SQLite ledger: decisions + nonces + orders + agents + velocity
 │   ├── gateway.rs         # Gateway seam: Mock ↔ Razorpay test-mode (basic auth /v1/orders)
-│   ├── main.rs            # axum server: / /health /v1/mandates /v1/checkout /v1/decisions /v1/stats
+│   ├── auth.rs            # Master key + per-agent key extraction/verification
+│   ├── error.rs           # Typed HTTP errors (400/401/403/404/500)
+│   ├── app.rs             # Axum handlers + router (agent-key + master-key zones)
+│   ├── lib.rs             # Crate root
+│   ├── main.rs            # Boot: seed, gateway, ledger, master key, bind
 │   └── bin/
-│       ├── agent.rs       # Nemotron buyer: JSON proposals, wallet budget guard, deterministic fallback
-│       └── eval.rs        # 10-vector HTTP attack suite against live server
-├── dashboard/index.html   # vanilla JS live decision stream, polling every 2s, replay viewer
-├── gen_card.py            # generates mandate_card.svg (verification terminal card)
-├── tests/mandates_tests.rs
-└── .github/workflows/ci.yml  # fmt → clippy -D warnings → tests → live attack suite (CI_SEED)
+│       ├── agent.rs       # Nemotron buyer: proposals, wallet guard, least-privilege mandate
+│       ├── chaos.rs       # 10-task concurrent idempotency harness
+│       └── eval/          # 10-vector HTTP attack suite (main.rs + vectors.rs)
+├── dashboard/index.html   # Live decision stream, polling every 2s, replay viewer
+├── gen_card.py            # Generates mandate_card.svg (ILLUSTRATIVE diagram, not eval output)
+├── tests/                 # mandates/store/common/eval_issue/eval_checkout/logging/fresh_clone
+└── .github/workflows/ci.yml  # Pinned SHAs: fmt → clippy → tests → coverage → audit → live suite
 ```
 
 ## Architecture
@@ -108,6 +113,7 @@ Run against a live server (`MANDATEPAY_SEED` shared, `RAZORPAY_KEY_ID` present �
 ```
 ======================================================================
  MANDATEPAY ATTACK SUITE — every vector must end in REJECT
+ (replay shows its ACTUAL decision: ALLOW idempotent or REJECT)
 ======================================================================
  control: API issued a legitimate mandate in 7 ms
  control: legitimate checkout 320 ms -> ALLOW (must be ALLOW)
@@ -115,23 +121,23 @@ Run against a live server (`MANDATEPAY_SEED` shared, `RAZORPAY_KEY_ID` present �
  replay setup: first spend 94 ms -> ALLOW (expected ALLOW)
  attack                     vector                                        ms  decision  reason
 ----------------------------------------------------------------------
- forged_signature           random 64B signature on valid mandate          3  REJECT    signature does not verify against mandate authority
- tampered_mandate_field     cap raised after signing, original sig ke…    11  REJECT    signature does not verify against mandate authority
- over_cap_amount            checkout amount 10x above signed cap           3  REJECT    amount 499000 exceeds mandate cap 49900
- zero_amount                checkout for 0 paise                           2  REJECT    amount_minor must be positive
- replay                     identical checkout resubmitted                11  REJECT    nonce already consumed: possible replay
+ forged_signature           random 64B signature on valid mandate          3  REJECT    invalid signature
+ tampered_mandate_field     cap raised after signing, original sig ke…    11  REJECT    amount exceeds agent policy
+ over_cap_amount            checkout amount 10x above signed cap           3  REJECT    amount exceeds agent policy
+ zero_amount                checkout for 0 paise                           2  HTTP-ERROR amount_minor must be positive
+ replay                     identical checkout resubmitted                11  ALLOW     idempotent replay: cached order returned
  expired_mandate            validly signed but expired window             11  REJECT    mandate expired
- non_allowlisted_merchant   validly signed mandate for unknown mercha…     3  REJECT    merchant 'merchant-999' is not allowlisted
- out_of_scope_action        signed action=payout outside governor sco…     2  REJECT    action 'payout' is outside governor scope
+ non_allowlisted_merchant   validly signed mandate for unknown mercha…     3  REJECT    merchant not allowlisted
+ out_of_scope_action        signed action=payout outside governor sco…     2  REJECT    action outside governor scope
  unsupported_version        signed future mandate version                  3  REJECT    unsupported mandate version
- malformed_signature        signature field is not valid base64            2  REJECT    malformed signature encoding
+ malformed_signature        signature field is not valid base64            2  REJECT    invalid signature
 ----------------------------------------------------------------------
  attacks rejected: 10/10   mean decision latency: 5 ms
  control legitimate checkout: ALLOWED (320 ms)
  SUITE GREEN
 ```
 
-Four attacks are *validly signed* hostile mandates — they prove the layers beyond the signature: expiry, allowlist, scope, and version. Mock-only runs show `~13 ms` control latency; live Razorpay adds `~300 ms` network cost — reported honestly, not hidden.
+Four attacks are *validly signed* hostile mandates — they prove the layers beyond the signature: expiry, allowlist, scope, and version. Latencies above are illustrative from a past run (yours will vary; mock is single-digit ms, live Razorpay adds `~300 ms` network cost). The replay row shows its actual decision: identical resubmission returns `ALLOW` with the cached order (at-most-once), which counts as pass. Error strings are generic by design (no cap/merchant oracle).
 
 **Chaos — at-most-once under concurrency (`cargo run --bin chaos`):**
 
@@ -162,9 +168,9 @@ Visible in Razorpay Dashboard → Orders (test mode). `gateway: mock` vs `razorp
 
 | Real | Simulated | Not claimed |
 |---|---|---|
-| `mandates.rs` canonical `serde_json::to_vec` + `ed25519-dalek v3` sign/verify; `policy.rs` 13 gates; `store.rs` SQLite `PRIMARY KEY` replay; `agent.rs` live Nemotron via `integrate.api.nvidia.com` (JSON-only, budget guard + fallback); `gateway.rs` `POST https://api.razorpay.com/v1/orders` basic auth when `RAZORPAY_KEY_ID` present; `dashboard/index.html` polling `/v1/decisions` + `/v1/stats`; CI boots a server with `CI_SEED` and must get `SUITE GREEN` | Merchant catalog is synthetic (`merchant-001` allowlist, no real catalog API); orders are test-mode (`rzp_test_`); `gateway: mock` path when no keys — same response shape, `live:false`; budget/goal are env defaults | Production Razorpay deployment, Vortex access, access to Razorpay's internal risk models. This composes *with* platform fraud, not instead of it. |
+| `mandates.rs` JCS (`serde_jcs`) + `ed25519-dalek v3` sign/verify; `policy.rs` 13 gates (shared stateless validator + nonce claim); `store.rs` SQLite `PRIMARY KEY` replay + atomic `PENDING` order reservation; per-agent keys (`agents.api_key_hash`); `agent.rs` live Nemotron via `integrate.api.nvidia.com` (JSON-only, wallet guard + least-privilege mandate + fallback); `gateway.rs` `POST https://api.razorpay.com/v1/orders` basic auth when `RAZORPAY_KEY_ID` present; `dashboard/index.html` polling `/v1/decisions` + `/v1/stats` (nonce-redacted unless master key); CI (SHA-pinned) boots a server with `CI_SEED` and must get `SUITE GREEN` | Merchant catalog is synthetic (`merchant-001` default allowlist, no real catalog API); orders are test-mode (`rzp_test_`); `gateway: mock` path when no keys — same response shape, `live:false`; budget/goal are env defaults; `mandate_card.svg` is an illustrative diagram from `gen_card.py`, not eval output | Production Razorpay deployment, production key management/HSM, Vortex access, access to Razorpay's internal risk models. This composes *with* platform fraud, not instead of it. |
 
-Honesty is the bar — every number above is from `cargo run --bin eval` on the commit you are reading, not a screenshot from another run.
+Honesty is the bar — the attack *vectors* above are what `cargo run --bin eval` runs on the commit you are reading; latencies vary by machine. `mandate_card.svg` is illustrative (see `gen_card.py` header).
 
 ## Known limitations
 
