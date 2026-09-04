@@ -66,7 +66,14 @@ jobs:
           set -euo pipefail
           export CI_SEED=$(openssl rand -base64 32)
           export CI_API_KEY=$(openssl rand -base64 32)
-          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
+          # Pre-build all three binaries BEFORE starting the server. Without this,
+          # `cargo run --bin mandatepay &` compiles through the 30s health window
+          # (after tarpaulin invalidates dev fingerprints) and the wait expires
+          # while cargo is still compiling rusqlite et al. Running the built
+          # binaries directly also avoids parallel cargos fighting over the
+          # build-dir file lock.
+          cargo build --bin mandatepay --bin eval --bin chaos
+          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED ./target/debug/mandatepay &
           SERVER_PID=$!
           trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
           # H9: fail fast when the server never becomes healthy instead of
@@ -77,7 +84,7 @@ jobs:
             sleep 1
           done
           if [ "$HEALTHY" != "1" ]; then echo "server never became healthy"; exit 1; fi
-          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin eval
-          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin chaos
+          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED ./target/debug/eval
+          MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED ./target/debug/chaos
           curl -sf http://127.0.0.1:8080/v1/chain/verify | grep -q '"chain_valid":true'
 

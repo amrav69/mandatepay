@@ -59,20 +59,37 @@ fn agent_headers(agent_key: &str) -> reqwest::header::HeaderMap {
 }
 
 /// C1: master -> per-agent key for eval-attacker.
+/// Retries transport-level connection failures briefly (server still binding)
+/// but fails fast on HTTP auth errors, so real 401/403 regressions stay loud.
 async fn ensure_agent_key(
     http: &reqwest::Client,
     server: &str,
     master: &str,
     agent_id: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let resp: Value = http
-        .post(format!("{server}/v1/agents"))
-        .header("X-API-Key", master)
-        .json(&json!({"agent_id": agent_id}))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let mut create: Option<Value> = None;
+    for attempt in 0..30 {
+        match http
+            .post(format!("{server}/v1/agents"))
+            .header("X-API-Key", master)
+            .json(&json!({"agent_id": agent_id}))
+            .send()
+            .await
+        {
+            Ok(r) => {
+                create = Some(r.json().await?);
+                break;
+            }
+            Err(e) if e.is_connect() => {
+                if attempt == 0 {
+                    eprintln!("eval: waiting for server to accept connections...");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let resp = create.ok_or("server unreachable after 30s; start it with: cargo run")?;
     if let Some(k) = resp["api_key"].as_str() {
         return Ok(k.to_string());
     }
