@@ -7,51 +7,77 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# H9: least-privilege default for all jobs.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # H9: hung tarpaulin/eval can no longer burn 6h of runner time.
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      # H9: SHA-pinned (re-pin with: git ls-remote <url>). Tags are mutable; SHAs are not.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable @ 2026-09
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Format
+        timeout-minutes: 5
         run: cargo fmt --check
 
       - name: Clippy
+        timeout-minutes: 10
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Tests
+        timeout-minutes: 15
         run: cargo test
 
       - name: Coverage
+        timeout-minutes: 15
         run: |
           cargo install cargo-tarpaulin --locked
           cargo tarpaulin --out Xml --fail-under 60
 
       - name: Audit
+        timeout-minutes: 10
         run: |
           cargo install cargo-audit --locked
           cargo audit
 
       # continue-on-error is intentional for Buildathon timeline: cargo deny advisories are informational (see deny.toml), not blocking for demo
       - name: Deny
+        timeout-minutes: 10
         continue-on-error: true
         run: |
           cargo install cargo-deny --locked
           cargo deny check advisories
 
       - name: Attack suite against live server
+        timeout-minutes: 10
         run: |
+          set -euo pipefail
           export CI_SEED=$(openssl rand -base64 32)
           export CI_API_KEY=$(openssl rand -base64 32)
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_MAX_CAP=100000 MANDATEPAY_SEED=$CI_SEED cargo run --bin mandatepay &
-          for i in {1..30}; do curl -s http://127.0.0.1:8080/health | grep -q '"status":"ok"' && break; sleep 1; done
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          # H9: fail fast when the server never becomes healthy instead of
+          # silently proceeding into a confusing eval "server unreachable".
+          HEALTHY=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health | grep -q '"status":"ok"'; then HEALTHY=1; break; fi
+            sleep 1
+          done
+          if [ "$HEALTHY" != "1" ]; then echo "server never became healthy"; exit 1; fi
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin eval
           MANDATEPAY_API_KEY=$CI_API_KEY MANDATEPAY_SEED=$CI_SEED cargo run --bin chaos
-          curl -s http://127.0.0.1:8080/v1/chain/verify | grep -q '"chain_valid":true'
+          curl -sf http://127.0.0.1:8080/v1/chain/verify | grep -q '"chain_valid":true'
 
