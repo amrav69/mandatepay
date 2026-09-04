@@ -311,6 +311,116 @@ async fn get_agent_requires_auth() {
 }
 
 #[tokio::test]
+async fn public_decisions_redact_nonce_master_sees_full() {
+    // H5 regression: unauthenticated decision reads must not expose full nonces.
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "redact-agent").await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &agent_key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "redact-agent",
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 50000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let full_nonce = body["mandate"]["nonce"].as_str().unwrap().to_string();
+    assert!(full_nonce.len() > 8);
+
+    let get_list = |key: Option<String>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder()
+                .method("GET")
+                .uri("/v1/decisions?limit=5");
+            if let Some(k) = key {
+                req = req.header("x-api-key", k);
+            }
+            let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            body["decisions"].as_array().unwrap().len()
+        }
+    };
+    assert!(get_list(None).await > 0);
+    // Public payload must not contain the full nonce.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/decisions?limit=5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    for d in body["decisions"].as_array().unwrap() {
+        let payload = d["payload"].as_str().unwrap_or("");
+        assert!(
+            !payload.contains(&full_nonce),
+            "public decisions must not leak full nonce"
+        );
+    }
+    // Master sees the full nonce.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/decisions?limit=50")
+                .header("x-api-key", &master)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let found = body["decisions"].as_array().unwrap().iter().any(|d| {
+        d["payload"]
+            .as_str()
+            .map(|p| p.contains(&full_nonce))
+            .unwrap_or(false)
+    });
+    assert!(found, "master should see full payload nonce");
+}
+
+#[tokio::test]
 async fn list_agents_requires_auth() {
     // C2 regression: list must be at least as protected as single-agent reads.
     let (app, _) = test_app();

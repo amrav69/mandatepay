@@ -452,6 +452,41 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
     Json(json!({ "status": "ok", "gateway": state.gateway.label() }))
 }
 
+/// H5: redact mandate nonces in public decision reads. Callers presenting a valid
+/// master key see full payloads; unauthenticated callers (dashboard) see payloads
+/// with `nonce` replaced by a prefix, preventing bulk nonce harvesting while
+/// keeping the demo readable.
+fn redact_payload(payload: &str, authed: bool) -> String {
+    if authed {
+        return payload.to_string();
+    }
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut()
+                && let Some(nonce) = obj
+                    .get("nonce")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string())
+            {
+                let prefix: String = nonce.chars().take(4).collect();
+                obj.insert(
+                    "nonce".to_string(),
+                    serde_json::Value::String(format!("{prefix}…(redacted)")),
+                );
+                return serde_json::to_string(&v).unwrap_or_else(|_| payload.to_string());
+            }
+            payload.to_string()
+        }
+        Err(_) => payload.to_string(),
+    }
+}
+
+fn is_master(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    extract_api_key(headers)
+        .map(|k| verify_api_key(&k, &state.api_key))
+        .unwrap_or(false)
+}
+
 #[derive(Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
@@ -459,14 +494,23 @@ pub struct ListParams {
 
 pub async fn list_decisions(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<ListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let authed = is_master(&state, &headers);
     let rows = state
         .db
         .list_recent(limit)
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(json!({ "decisions": rows })))
+    let redacted: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|mut r| {
+            r.payload = redact_payload(&r.payload, authed);
+            serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)
+        })
+        .collect();
+    Ok(Json(json!({ "decisions": redacted })))
 }
 
 pub async fn ledger_stats(
@@ -481,14 +525,19 @@ pub async fn ledger_stats(
 
 pub async fn get_decision(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let authed = is_master(&state, &headers);
     let row = state
         .db
         .get_decision(id)
         .map_err(|e| AppError::Internal(e.to_string()))?;
     match row {
-        Some(r) => Ok(Json(json!(r))),
+        Some(mut r) => {
+            r.payload = redact_payload(&r.payload, authed);
+            Ok(Json(json!(r)))
+        }
         None => Err(AppError::NotFound(format!("decision {id} not found"))),
     }
 }
