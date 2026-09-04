@@ -112,52 +112,71 @@
   <text x="386" y="56" font-family="JetBrains Mono,monospace" font-size="9"
     font-weight="700" fill="#00D9FF" letter-spacing="1">VERIFICATION LOG  · 9 GATES</text>
 
-  <!-- Gate rows: check / label / time -->
-  <!-- gate rows data: (label, time_ms, pass) -->
+  <!-- Gate rows: 13 policy checks (illustrative timings) -->
   <!-- 1 -->
-  <text x="386" y="72" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="72" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">version check</text>
-  <text x="700" y="72" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.01ms</text>
+  <text x="386" y="70" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="70" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">version check</text>
+  <text x="700" y="70" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 2 -->
-  <text x="386" y="87" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="87" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">action in scope</text>
-  <text x="700" y="87" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.01ms</text>
+  <text x="386" y="80" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="80" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">action in scope</text>
+  <text x="700" y="80" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 3 -->
-  <text x="386" y="102" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="102" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">currency = INR</text>
-  <text x="700" y="102" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.01ms</text>
+  <text x="386" y="90" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="90" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">currency = INR</text>
+  <text x="700" y="90" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 4 -->
-  <text x="386" y="117" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="117" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">cap &gt; 0</text>
-  <text x="700" y="117" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.01ms</text>
+  <text x="386" y="100" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="100" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">max_amount &gt; 0</text>
+  <text x="700" y="100" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 5 -->
-  <text x="386" y="132" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="132" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">merchant allowlisted</text>
-  <text x="700" y="132" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.02ms</text>
+  <text x="386" y="110" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="110" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">expires &gt; issued</text>
+  <text x="700" y="110" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 6 -->
-  <text x="386" y="147" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="147" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">amount &gt; 0 and ≤ cap</text>
-  <text x="700" y="147" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.02ms</text>
+  <text x="386" y="120" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="120" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">agent + merchant present</text>
+  <text x="700" y="120" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
-  <!-- 7 — the big one -->
-  <text x="386" y="162" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950" filter="url(#glow-sm)">&#10003;</text>
-  <text x="398" y="162" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">Ed25519 signature valid</text>
-  <text x="700" y="162" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#FFBD2E">0.12ms</text>
+  <!-- 7 -->
+  <text x="386" y="130" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="130" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">issued_at leeway (60s)</text>
+  <text x="700" y="130" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
   <!-- 8 -->
-  <text x="386" y="177" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="177" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">mandate not expired</text>
-  <text x="700" y="177" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.01ms</text>
+  <text x="386" y="140" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="140" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">mandate not expired</text>
+  <text x="700" y="140" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
 
-  <!-- 9 -->
-  <text x="386" y="192" font-family="JetBrains Mono,monospace" font-size="9" fill="#3fb950">&#10003;</text>
-  <text x="398" y="192" font-family="JetBrains Mono,monospace" font-size="9" fill="#e6edf3">nonce fresh (SQLite PK)</text>
-  <text x="700" y="192" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="9" fill="#484f58">0.04ms</text>
+  <!-- 9 — the big one -->
+  <text x="386" y="150" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950" filter="url(#glow-sm)">&#10003;</text>
+  <text x="398" y="150" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">Ed25519 signature valid</text>
+  <text x="700" y="150" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#FFBD2E">0.12ms</text>
+
+  <!-- 10 -->
+  <text x="386" y="160" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="160" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">merchant allowlisted</text>
+  <text x="700" y="160" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.02ms</text>
+
+  <!-- 11 -->
+  <text x="386" y="170" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="170" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">amount &gt; 0</text>
+  <text x="700" y="170" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
+
+  <!-- 12 -->
+  <text x="386" y="180" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="180" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">amount ≤ cap</text>
+  <text x="700" y="180" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.01ms</text>
+
+  <!-- 13 -->
+  <text x="386" y="190" font-family="JetBrains Mono,monospace" font-size="8" fill="#3fb950">&#10003;</text>
+  <text x="398" y="190" font-family="JetBrains Mono,monospace" font-size="8" fill="#e6edf3">nonce fresh (SQLite PK)</text>
+  <text x="700" y="190" text-anchor="end" font-family="JetBrains Mono,monospace" font-size="8" fill="#484f58">0.04ms</text>
 
   <!-- Divider -->
   <line x1="382" y1="202" x2="710" y2="202" stroke="#21262d" stroke-width="1"/>

@@ -42,7 +42,7 @@ cargo run --bin eval
 mandatepay/
 ├── src/
 │   ├── mandates.rs        # Mandate schema, canonical bytes, Ed25519 sign/verify
-│   ├── policy.rs          # 9-gate evaluation: version/action/currency/cap/merchant/amount/sig/expiry/replay
+│   ├── policy.rs          # 13-gate evaluation: version/action/currency/max>0/expires>issued/ids/issued-leeway/expiry/sig/allowlist/amount>0/amount<=cap/nonce
 │   ├── store.rs           # SQLite ledger: decisions + nonces + stats
 │   ├── gateway.rs         # Gateway seam: Mock ↔ Razorpay test-mode (basic auth /v1/orders)
 │   ├── main.rs            # axum server: / /health /v1/mandates /v1/checkout /v1/decisions /v1/stats
@@ -67,13 +67,15 @@ Authority (mandates.rs) ◀── Ed25519 SigningKey (MANDATEPAY_SEED) ───
  │  signs canonical_bytes(mandate) → 64B sig
  ▼
 Mandate + signature + amount_minor ──POST /v1/checkout──▶ Policy Engine (policy.rs)
-                                                         │  9 gates: version / action / currency / cap>0
-                                                         │          merchant allowlist / amount>0 / amount≤cap
-                                                         │          sig verifies / not expired / nonce fresh
+                                                         │  13 gates: version / action / currency / max>0
+                                                         │          expires>issued / non-empty ids / issued_at leeway
+                                                         │          expiry / sig verifies / allowlist
+                                                         │          amount>0 / amount≤cap / nonce fresh
                                                          ▼
                                                    SQLite (store.rs)
-                                                   ├─ nonces (PRIMARY KEY → replay = REJECT)
-                                                   └─ decisions (append-only audit trail)
+                                                   ├─ nonces (PRIMARY KEY; first spend creates 1 order,
+                                                   │          identical resubmit → ALLOW cached, else REJECT)
+                                                   └─ decisions (append-only hash-chained audit trail)
                                                          │
                                           ┌────────────────┴────────────────┐
                                           ▼                                 ▼
@@ -160,7 +162,7 @@ Visible in Razorpay Dashboard → Orders (test mode). `gateway: mock` vs `razorp
 
 | Real | Simulated | Not claimed |
 |---|---|---|
-| `mandates.rs` canonical `serde_json::to_vec` + `ed25519-dalek v3` sign/verify; `policy.rs` 9 gates; `store.rs` SQLite `PRIMARY KEY` replay; `agent.rs` live Nemotron via `integrate.api.nvidia.com` (JSON-only, budget guard + fallback); `gateway.rs` `POST https://api.razorpay.com/v1/orders` basic auth when `RAZORPAY_KEY_ID` present; `dashboard/index.html` polling `/v1/decisions` + `/v1/stats`; CI boots a server with `CI_SEED` and must get `SUITE GREEN` | Merchant catalog is synthetic (`merchant-001` allowlist, no real catalog API); orders are test-mode (`rzp_test_`); `gateway: mock` path when no keys — same response shape, `live:false`; budget/goal are env defaults | Production Razorpay deployment, Vortex access, access to Razorpay's internal risk models. This composes *with* platform fraud, not instead of it. |
+| `mandates.rs` canonical `serde_json::to_vec` + `ed25519-dalek v3` sign/verify; `policy.rs` 13 gates; `store.rs` SQLite `PRIMARY KEY` replay; `agent.rs` live Nemotron via `integrate.api.nvidia.com` (JSON-only, budget guard + fallback); `gateway.rs` `POST https://api.razorpay.com/v1/orders` basic auth when `RAZORPAY_KEY_ID` present; `dashboard/index.html` polling `/v1/decisions` + `/v1/stats`; CI boots a server with `CI_SEED` and must get `SUITE GREEN` | Merchant catalog is synthetic (`merchant-001` allowlist, no real catalog API); orders are test-mode (`rzp_test_`); `gateway: mock` path when no keys — same response shape, `live:false`; budget/goal are env defaults | Production Razorpay deployment, Vortex access, access to Razorpay's internal risk models. This composes *with* platform fraud, not instead of it. |
 
 Honesty is the bar — every number above is from `cargo run --bin eval` on the commit you are reading, not a screenshot from another run.
 
