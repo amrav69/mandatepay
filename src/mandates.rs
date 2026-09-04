@@ -131,10 +131,15 @@ pub fn load_seed() -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Process-global env vars race parallel tests; serialize all env-mutating tests here.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn load_seed_uses_valid_configured_value() {
         // H3: a well-formed seed must be honored exactly (no silent rotation).
+        let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("MANDATEPAY_SEED").ok();
         let raw = [9u8; 32];
         unsafe { std::env::set_var("MANDATEPAY_SEED", B64.encode(raw)) };
@@ -150,6 +155,7 @@ mod tests {
     #[test]
     fn load_seed_falls_back_loudly_on_garbage() {
         // H3: garbage seed must not panic and must not return the valid value.
+        let _lock = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("MANDATEPAY_SEED").ok();
         unsafe { std::env::set_var("MANDATEPAY_SEED", "%%%not-base64%%%") };
         let _ = load_seed();
