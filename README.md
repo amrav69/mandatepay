@@ -1,5 +1,10 @@
 # MandatePay
 
+> **Live demo (frontend): https://mandatepay-five.vercel.app**
+> Dashboard is statically hosted on Vercel. Point it at your API with `?api=https://your-backend` (e.g. `https://mandatepay-five.vercel.app/?api=http://127.0.0.1:8080`), or run the backend locally below. Backend Rust API allows CORS `*` for demo.
+
+[![Vercel](https://img.shields.io/badge/demo-vercel-black?style=flat&logo=vercel)](https://mandatepay-five.vercel.app)
+
 <div align="center">
 <img src="./mandate_card.svg" alt="MandatePay verification terminal" width="720"/>
 </div>
@@ -20,6 +25,9 @@ Razorpay calls 2026 the age of agentic payments: ACP/AP2/x402 and NPCI's UAP are
 ## Quick start
 
 ```bash
+# 0. live frontend (no install): https://mandatepay-five.vercel.app
+#    connect to local API: https://mandatepay-five.vercel.app/?api=http://127.0.0.1:8080
+
 # 1. server + dashboard (http://127.0.0.1:8080)
 cargo run --bin mandatepay
 

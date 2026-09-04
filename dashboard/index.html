@@ -220,6 +220,7 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
     </div>
     <button class="btn" id="pauseBtn">Pause</button>
     <button class="btn" id="refreshBtn">Refresh now</button>
+    <input id="apiBaseInput" placeholder="API: same-origin (or https://…)" title="Backend API base. Set ?api=… once or paste here." style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:9px;padding:7px 10px;color:#cbd6ea;font-size:11.5px;width:230px;backdrop-filter:blur(12px)" />
     <span id="status" class="status">loading…</span>
     <span style="flex:1"></span>
     <span class="status" style="opacity:0.8">Click a row → replay its signed payload</span>
@@ -238,6 +239,12 @@ tbody tr:hover{background:rgba(255,255,255,0.04)}
 </div>
 
 <script>
+// Vercel-ready: same-origin by default, override with ?api=https://your-backend or toolbar input.
+// Backend (Rust) allows CORS *, so https://<app>.vercel.app can talk to your deployed API.
+const __qsApi = new URLSearchParams(location.search).get('api');
+if (__qsApi) localStorage.setItem('MP_API_BASE', __qsApi.replace(/\/$/, ''));
+function apiBase(){ return (localStorage.getItem('MP_API_BASE') || '').replace(/\/$/, ''); }
+function api(p){ const b = apiBase(); return b ? b + p : p; }
 let paused=false, expandedId=null, currentLimit=50;
 const sel = document.getElementById('limitSelect');
 const trig = sel.querySelector('.select-trigger');
@@ -264,7 +271,8 @@ function togglePause(){
   b.classList.toggle('active',paused);
   document.getElementById('liveDot').classList.toggle('paused',paused);
 }
-async function fetchJSON(url){
+async function fetchJSON(path){
+  const url = path.startsWith('http') ? path : api(path);
   const r=await fetch(url);
   if(!r.ok) throw new Error(url+" -> "+r.status);
   return r.json();
@@ -311,10 +319,24 @@ async function refreshOnce(){
     render(rows);
     renderAgents(aRes.agents||[]);
   }catch(e){
-    status.textContent="error: "+e.message;
+    const base = apiBase();
+    status.textContent = base
+      ? "error: "+e.message+" — check API base"
+      : "demo view: backend not reachable on Vercel static — set API base (?api=https://your-api) or run cargo run --bin mandatepay locally";
     status.style.color="#ff7a7a";
   }
 }
+// Backend base input wiring (persists to localStorage)
+(function(){
+  const inp = document.getElementById('apiBaseInput');
+  if(!inp) return;
+  inp.value = apiBase();
+  inp.placeholder = apiBase() || "API: same-origin (or https://…)";
+  inp.addEventListener('change', ()=>{
+    localStorage.setItem('MP_API_BASE', inp.value.trim().replace(/\/$/, ''));
+    refreshOnce();
+  });
+})();
 function getApiKey(){
   let k=localStorage.getItem('MANDATEPAY_API_KEY')||'';
   if(!k){

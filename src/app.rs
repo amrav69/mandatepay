@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
+    http::{HeaderValue, Method},
+    middleware::Next,
     response::{Html, IntoResponse},
     routing::{get, post},
 };
@@ -911,6 +913,41 @@ pub async fn dashboard() -> impl IntoResponse {
     Html(html)
 }
 
+// Allow https://*.vercel.app frontend to call this API when deployed separately.
+// Permissive * is intentional for Buildathon demo; tighten to exact origin in prod.
+async fn cors_middleware(req: Request, next: Next) -> impl IntoResponse {
+    if req.method() == Method::OPTIONS {
+        return (
+            [
+                ("access-control-allow-origin", "*"),
+                (
+                    "access-control-allow-methods",
+                    "GET,POST,PATCH,DELETE,OPTIONS",
+                ),
+                (
+                    "access-control-allow-headers",
+                    "content-type,authorization,x-api-key",
+                ),
+                ("access-control-max-age", "86400"),
+            ],
+            "",
+        )
+            .into_response();
+    }
+    let mut res = next.run(req).await.into_response();
+    let h = res.headers_mut();
+    h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    h.insert(
+        "access-control-allow-methods",
+        HeaderValue::from_static("GET,POST,PATCH,DELETE,OPTIONS"),
+    );
+    h.insert(
+        "access-control-allow-headers",
+        HeaderValue::from_static("content-type,authorization,x-api-key"),
+    );
+    res
+}
+
 pub fn build_router(state: Arc<AppState>) -> Router {
     // C1: agent-key routes do their own per-agent verification inside handlers
     // (they need the body agent_id), so they are NOT behind the master middleware.
@@ -941,5 +978,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/stats", get(ledger_stats))
         .route("/v1/metrics", get(ledger_stats))
         .merge(master_protected)
+        .layer(axum::middleware::from_fn(cors_middleware))
         .with_state(state)
 }

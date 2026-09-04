@@ -1,0 +1,17 @@
+.git
+.github
+target
+src
+tests
+*.rs
+Cargo.lock
+Cargo.toml
+deny.toml
+clippy.toml
+rustfmt.toml
+tarpaulin.toml
+Dockerfile
+docker-compose.yml
+.env*
+*.db
+gen_card.py
