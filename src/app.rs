@@ -77,10 +77,17 @@ pub fn parse_allowlist() -> Vec<String> {
 }
 
 pub fn parse_max_cap() -> u64 {
-    std::env::var("MANDATEPAY_MAX_CAP")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(100_000)
+    // M5: warn on garbage instead of silently falling back to 100000.
+    match std::env::var("MANDATEPAY_MAX_CAP") {
+        Ok(v) if !v.trim().is_empty() => match v.trim().parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                tracing::warn!(value = %v, "MANDATEPAY_MAX_CAP invalid, falling back to 100000");
+                100_000
+            }
+        },
+        _ => 100_000,
+    }
 }
 
 /// Master key (admin): gates `/v1/agents*` management endpoints only.
