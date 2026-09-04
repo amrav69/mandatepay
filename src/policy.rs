@@ -34,7 +34,7 @@ pub fn validate_stateless(
         return reject("currency not supported");
     }
     if mandate.max_amount_minor == 0 {
-        return reject("max_amount_minor must be positive");
+        return reject("amount must be positive");
     }
     if mandate.expires_at <= mandate.issued_at {
         return reject("expires_at must be after issued_at");
@@ -59,7 +59,7 @@ pub fn validate_stateless(
         return reject("merchant not allowlisted");
     }
     if amount_minor == 0 {
-        return reject("amount_minor must be positive");
+        return reject("amount must be positive");
     }
     if amount_minor > mandate.max_amount_minor {
         // Generic: exact caps stay server-side.

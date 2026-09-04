@@ -19,10 +19,17 @@ use crate::{
     store::Db,
 };
 
+/// Four different caps — similar names, different owners:
+/// - `Mandate.max_amount_minor`: per-mandate spend ceiling, signed by the authority.
+/// - `AgentPolicy.max_cap`: per-agent ceiling, set by the admin; checkout enforces
+///   `amount <= mandate cap <= agent cap`.
+/// - `AppState.max_mandate_cap` (`MANDATEPAY_MAX_CAP`): server-wide ceiling on issuance.
+/// - `AGENT_BUDGET_MINOR`: the buyer agent's own wallet env var (client-side only).
 pub struct AppState {
     pub authority: Authority,
     pub db: Db,
     pub gateway: Gateway,
+    /// Master/admin key for `/v1/agents*` management only; never valid for mandates/checkout.
     pub api_key: String,
     pub max_mandate_cap: u64,
 }
@@ -144,6 +151,10 @@ fn require_agent_key(
     }
 }
 
+/// The authority is intentionally a dumb signer: it authenticates the AGENT
+/// (per-agent key) but does NOT consult that agent's allowlist/caps — those are
+/// checkout-time policy. So a signed mandate may still REJECT at checkout; sign
+/// only what you intend the agent to be able to spend within its current policy.
 pub async fn issue(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -162,20 +173,13 @@ pub async fn issue(
         ));
     }
     if req.currency != "INR" {
-        return Err(AppError::BadRequest(
-            "only INR mandates are supported".into(),
-        ));
+        return Err(AppError::BadRequest("currency not supported".into()));
     }
     if req.max_amount_minor > i64::MAX as u64 {
-        return Err(AppError::BadRequest(
-            "max_amount_minor exceeds i64::MAX".into(),
-        ));
+        return Err(AppError::BadRequest("amount exceeds maximum".into()));
     }
     if req.max_amount_minor > state.max_mandate_cap {
-        return Err(AppError::BadRequest(format!(
-            "max_amount_minor {} exceeds server cap {}",
-            req.max_amount_minor, state.max_mandate_cap
-        )));
+        return Err(AppError::BadRequest("amount exceeds server policy".into()));
     }
 
     let now = mandates::unix_now();
@@ -226,16 +230,16 @@ pub async fn checkout(
     // Ed25519 signature (what) verified inside `policy::evaluate` next.
     require_agent_key(&state.db, &headers, &req.mandate.agent_id)?;
     if req.amount_minor > i64::MAX as u64 {
-        return Err(AppError::BadRequest("amount_minor exceeds i64::MAX".into()));
+        return Err(AppError::BadRequest("amount exceeds maximum".into()));
     }
     if req.mandate.max_amount_minor > i64::MAX as u64 {
-        return Err(AppError::BadRequest(
-            "mandate max_amount_minor exceeds i64::MAX".into(),
-        ));
+        return Err(AppError::BadRequest("amount exceeds maximum".into()));
     }
     let agent_id = req.mandate.agent_id.trim();
     if agent_id.is_empty() {
-        return Err(AppError::BadRequest("agent_id required".into()));
+        return Err(AppError::BadRequest(
+            "agent_id and merchant_id are required".into(),
+        ));
     }
 
     // H2: unknown agents fall back to the same defaults as get_or_create_agent
@@ -480,6 +484,9 @@ pub async fn checkout(
     }))
 }
 
+/// Public liveness probe for orchestrators/CI. The `gateway` label (`mock` vs
+/// `razorpay-test`) is operational, not secret: it reveals only whether live
+/// keys are configured, never key material. Intentionally unauthenticated.
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "gateway": state.gateway.label() }))
 }
@@ -545,6 +552,7 @@ pub async fn list_decisions(
     Ok(Json(json!({ "decisions": redacted })))
 }
 
+/// Backwards-compat alias `/v1/metrics` serves this same handler; both are public.
 pub async fn ledger_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -602,6 +610,9 @@ pub struct VerifyRequest {
     pub signature: String,
 }
 
+/// Intentionally public and keyless: pure signature check over caller-supplied
+/// bytes, no state access, no key oracle beyond what checkout already reveals
+/// (a forged mandate fails checkout identically with or without this endpoint).
 pub async fn verify_mandate(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VerifyRequest>,
@@ -659,6 +670,8 @@ pub async fn list_agents(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AgentListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Defaults differ deliberately: decisions default 50 (high-volume ledger),
+    // agents default 100 (low-cardinality registry). Both clamp to 1..=200.
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
     let offset = params.offset.unwrap_or(0).max(0);
     // H1: filter AND sort in SQL before LIMIT/OFFSET so pages reflect the
@@ -706,7 +719,7 @@ pub async fn update_agent(
             return Err(AppError::BadRequest("max_cap must be positive".into()));
         }
         if v > i64::MAX as u64 {
-            return Err(AppError::BadRequest("max_cap exceeds i64::MAX".into()));
+            return Err(AppError::BadRequest("agent cap exceeds maximum".into()));
         }
     }
     if let Some(v) = req.velocity_limit
@@ -728,7 +741,7 @@ pub async fn update_agent(
         && v > i64::MAX as u64
     {
         return Err(AppError::BadRequest(
-            "velocity_window_secs exceeds i64::MAX".into(),
+            "velocity window exceeds maximum".into(),
         ));
     }
     // Absurd windows would never reset; store re-checks (InvalidParameterName -> 400).
@@ -801,7 +814,7 @@ pub async fn create_agent(
             return Err(AppError::BadRequest("max_cap must be positive".into()));
         }
         if v > i64::MAX as u64 {
-            return Err(AppError::BadRequest("max_cap exceeds i64::MAX".into()));
+            return Err(AppError::BadRequest("agent cap exceeds maximum".into()));
         }
     }
     if let Some(v) = req.velocity_limit
@@ -823,7 +836,7 @@ pub async fn create_agent(
         && v > i64::MAX as u64
     {
         return Err(AppError::BadRequest(
-            "velocity_window_secs exceeds i64::MAX".into(),
+            "velocity window exceeds maximum".into(),
         ));
     }
     // Absurd windows would never reset; store re-checks (InvalidParameterName -> 400).
