@@ -107,6 +107,12 @@ pub async fn require_api_key(
 
 /// C1: verify the caller presents the per-agent key for `agent_id`.
 /// 401 when missing/unknown, 403 on mismatch for a known agent.
+fn mandate_payload_json(mandate: &Mandate) -> Result<String, AppError> {
+    // Audit payloads must never silently become "" on serialization failure.
+    serde_json::to_string(mandate)
+        .map_err(|e| AppError::Internal(format!("mandate serialization failed: {e}")))
+}
+
 fn require_agent_key(
     db: &Db,
     headers: &axum::http::HeaderMap,
@@ -202,7 +208,7 @@ pub async fn issue(
                 "cap {} {} for agent {}",
                 mandate.max_amount_minor, mandate.currency, mandate.agent_id
             ),
-            &serde_json::to_string(&mandate).unwrap_or_default(),
+            &mandate_payload_json(&mandate)?,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -255,7 +261,7 @@ pub async fn checkout(
             "/v1/checkout",
             "REJECT",
             &reason,
-            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+            &mandate_payload_json(&req.mandate)?,
         )?;
         return Ok(Json(DecisionResponse {
             decision: "REJECT".into(),
@@ -273,7 +279,7 @@ pub async fn checkout(
             "/v1/checkout",
             "REJECT",
             &reason,
-            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+            &mandate_payload_json(&req.mandate)?,
         )?;
         return Ok(Json(DecisionResponse {
             decision: "REJECT".into(),
@@ -439,7 +445,7 @@ pub async fn checkout(
             "/v1/checkout",
             label,
             &reason,
-            &serde_json::to_string(&req.mandate).unwrap_or_default(),
+            &mandate_payload_json(&req.mandate)?,
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
