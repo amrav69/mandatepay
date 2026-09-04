@@ -55,14 +55,21 @@ impl Gateway {
             .to_string();
         if !key_id.is_empty() && !key_secret.is_empty() {
             tracing::info!("gateway: razorpay-test keys present -> live test-mode client enabled");
-            Gateway::Razorpay {
-                key_id,
-                key_secret,
-                http: reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(10))
-                    .connect_timeout(std::time::Duration::from_secs(5))
-                    .build()
-                    .expect("reqwest client builds"),
+            match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+            {
+                Ok(http) => Gateway::Razorpay {
+                    key_id,
+                    key_secret,
+                    http,
+                },
+                Err(e) => {
+                    // M3: fail closed to Mock (no money moves) rather than panicking at boot.
+                    tracing::error!(error = %e, "reqwest client build failed, falling back to mock gateway");
+                    Gateway::Mock
+                }
             }
         } else {
             tracing::info!("gateway: no RAZORPAY keys in env -> mock gateway (no money moves)");
