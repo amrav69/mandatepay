@@ -54,11 +54,23 @@ pub fn unix_now() -> u64 {
     }
 }
 
-pub fn new_token(prefix: &str, entropy_bytes: usize) -> String {
+#[derive(Debug, Error)]
+#[error("os randomness unavailable: {0}")]
+pub struct RandomnessError(String);
+
+/// Fallible token mint for request paths (issue/gateway) so RNG failure becomes
+/// a 500, not a panic. Panic-free: returns Err instead of expect.
+pub fn try_new_token(prefix: &str, entropy_bytes: usize) -> Result<String, RandomnessError> {
     let mut buf = vec![0u8; entropy_bytes];
-    getrandom::fill(&mut buf).expect("os randomness unavailable");
+    getrandom::fill(&mut buf).map_err(|e| RandomnessError(e.to_string()))?;
     // Use URL_SAFE_NO_PAD so mandate_id/nonce are safe in URL paths, query params and headers (no +/=).
-    format!("{prefix}{}", TOKEN_B64.encode(buf))
+    Ok(format!("{prefix}{}", TOKEN_B64.encode(buf)))
+}
+
+pub fn new_token(prefix: &str, entropy_bytes: usize) -> String {
+    // Retained for binaries/tests where panic-on-RNG-failure is acceptable
+    // startup behavior; request paths must use try_new_token.
+    try_new_token(prefix, entropy_bytes).expect("os randomness unavailable")
 }
 
 pub struct Authority {

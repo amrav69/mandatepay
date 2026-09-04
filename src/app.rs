@@ -168,7 +168,8 @@ pub async fn issue(
     let now = mandates::unix_now();
     let mandate = Mandate {
         version: 1,
-        mandate_id: mandates::new_token("mnd_", 9),
+        mandate_id: mandates::try_new_token("mnd_", 9)
+            .map_err(|e| AppError::Internal(e.to_string()))?,
         agent_id: req.agent_id.trim().to_string(),
         merchant_id: req.merchant_id.trim().to_string(),
         action: "create_order".into(),
@@ -178,7 +179,7 @@ pub async fn issue(
         expires_at: now
             .checked_add(req.ttl_secs)
             .ok_or_else(|| AppError::BadRequest("ttl_secs overflow".into()))?,
-        nonce: mandates::new_token("n_", 16),
+        nonce: mandates::try_new_token("n_", 16).map_err(|e| AppError::Internal(e.to_string()))?,
     };
     let signature = state
         .authority

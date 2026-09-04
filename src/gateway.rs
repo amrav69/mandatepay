@@ -1,4 +1,4 @@
-use crate::mandates::{Mandate, new_token, unix_now};
+use crate::mandates::{Mandate, try_new_token, unix_now};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -9,6 +9,8 @@ pub enum GatewayError {
     Http(String),
     #[error("razorpay api error: {0}")]
     Api(String),
+    #[error("internal token failure: {0}")]
+    Internal(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +84,8 @@ impl Gateway {
     ) -> Result<GatewayOrder, GatewayError> {
         match self {
             Gateway::Mock => Ok(GatewayOrder {
-                id: new_token("order_mock_", 9),
+                id: try_new_token("order_mock_", 9)
+                    .map_err(|e| GatewayError::Internal(e.to_string()))?,
                 entity: "order".into(),
                 amount: amount_minor,
                 currency: "INR".into(),
