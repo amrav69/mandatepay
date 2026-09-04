@@ -1,2 +1,5 @@
+# Thresholds chosen for the checkout/record hot paths (H1/C4 transaction + idempotency).
+# checkout() is intentionally branchy (auth, caps, two cache checks, reservation races);
+# 30 keeps it lint-clean without splitting the money path across helpers prematurely.
 cognitive-complexity-threshold = 30
 too-many-arguments-threshold = 7
