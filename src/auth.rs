@@ -12,6 +12,23 @@ pub fn resolve_api_key() -> String {
     getrandom::fill(&mut raw).expect("os randomness unavailable");
     let k = B64.encode(raw);
     let hash = hex::encode(Sha256::digest(k.as_bytes()));
+    // C4: ephemeral keys were previously unrecoverable (only the hash was logged),
+    // locking the operator out of all write endpoints with no recourse but restart.
+    // Print the plaintext once to stderr and persist it to .ephemeral_key so a
+    // fresh-boot operator can actually use it.
+    eprintln!(
+        "MANDATEPAY_API_KEY not set — generated ephemeral master key (valid for this boot only):"
+    );
+    eprintln!("  {k}");
+    eprintln!(
+        "Set MANDATEPAY_API_KEY in .env to persist. Key hash prefix: {}",
+        &hash[..16]
+    );
+    if let Err(e) = std::fs::write(".ephemeral_key", format!("{k}\n")) {
+        tracing::warn!(error = %e, "could not persist .ephemeral_key file");
+    } else {
+        tracing::warn!(ephemeral_key_hash = %hash[..16], ".ephemeral_key written; MANDATEPAY_API_KEY not set — generated ephemeral key");
+    }
     tracing::warn!(ephemeral_key_hash = %hash[..16], "MANDATEPAY_API_KEY not set — generated ephemeral key; set in .env to persist");
     k
 }
@@ -102,6 +119,20 @@ mod tests {
     fn extract_missing_returns_none() {
         let h = HeaderMap::new();
         assert!(extract_api_key(&h).is_none());
+    }
+
+    #[test]
+    fn resolve_returns_configured_key_trimmed() {
+        // C4: configured key path must return the exact value (no ephemeral generation).
+        let prev = std::env::var("MANDATEPAY_API_KEY").ok();
+        unsafe { std::env::set_var("MANDATEPAY_API_KEY", "  test-master-key  ") };
+        assert_eq!(resolve_api_key(), "test-master-key");
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("MANDATEPAY_API_KEY", v),
+                None => std::env::remove_var("MANDATEPAY_API_KEY"),
+            }
+        }
     }
 
     #[test]
