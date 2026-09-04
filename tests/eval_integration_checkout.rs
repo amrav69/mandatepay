@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
 #[tokio::test]
-async fn checkout_rejects_without_api_key() {
+async fn mandates_rejects_without_api_key() {
+    // Renamed (was checkout_rejects_without_api_key): it posts to /v1/mandates.
     let (app, _) = test_app();
     let resp = app
         .oneshot(
@@ -31,6 +32,84 @@ async fn checkout_rejects_without_api_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn checkout_without_valid_key_returns_401_or_403() {
+    // H8: real checkout auth coverage under the per-agent model. Three cases:
+    // no key -> 401; master key (wrong scope) -> 401/403; another agent's key -> 401/403.
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "h8-agent").await;
+    let other_key = ensure_agent_key(&app, &master, "h8-other").await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &agent_key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "h8-agent",
+                        "merchant_id": "merchant-001",
+                        "currency": "INR",
+                        "max_amount_minor": 5000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mandate = body["mandate"].clone();
+    let sig = body["signature"].as_str().unwrap().to_string();
+    let payload = json!({"mandate": mandate, "signature": sig, "amount_minor": 100});
+
+    // No key.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/checkout")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Master key and wrong-agent key must both fail with 401/403.
+    for (label, key) in [("master", master.clone()), ("wrong-agent", other_key)] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/checkout")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &key)
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::FORBIDDEN,
+            "checkout with {label} key must be 401/403, got {}",
+            resp.status()
+        );
+    }
 }
 
 #[tokio::test]
