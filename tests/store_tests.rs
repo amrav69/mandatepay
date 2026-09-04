@@ -242,6 +242,25 @@ fn h1_sorted_pagination_reflects_global_order() {
 }
 
 #[test]
+fn m9_like_backslash_escaped() {
+    // M9 regression: backslash in the query must match a literal backslash,
+    // not act as an escape that rewrites the pattern.
+    let db = Db::open(":memory:").unwrap();
+    db.get_or_create_agent("m9\\one").unwrap();
+    db.get_or_create_agent("m9Xtwo").unwrap();
+    let hit = db
+        .list_agents_paginated_filtered(10, 0, Some("m9\\o"), "agent_id", false)
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].agent_id, "m9\\one");
+    // A bare % must be literal (matches nothing here), not a wildcard.
+    let pct = db
+        .list_agents_paginated_filtered(10, 0, Some("%"), "agent_id", false)
+        .unwrap();
+    assert!(pct.is_empty());
+}
+
+#[test]
 fn h8_update_agent_atomic_partial_updates() {
     let db = Db::open(":memory:").unwrap();
     db.get_or_create_agent("atomic-agent").unwrap();

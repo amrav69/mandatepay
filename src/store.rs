@@ -906,11 +906,14 @@ impl Db {
             })
         };
         if let Some(needle) = filtered {
-            // Use LIKE with ESCAPE to handle % and _ safely; lowercase comparison for case-insensitive.
+            // Use LIKE with ESCAPE to handle % and _ safely; lowercase comparison
+            // for case-insensitive. M9: escape backslash FIRST so \% / \_ / \\
+            // round-trip correctly (a bare backslash query previously matched '%').
             let pattern = format!(
                 "%{}%",
                 needle
                     .to_lowercase()
+                    .replace('\\', "\\\\")
                     .replace('%', "\\%")
                     .replace('_', "\\_")
             );
