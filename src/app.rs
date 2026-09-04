@@ -216,13 +216,16 @@ pub async fn checkout(
         return Err(AppError::BadRequest("agent_id required".into()));
     }
 
+    // H2: unknown agents fall back to the same defaults as get_or_create_agent
+    // (previously the looser server cap). Unreachable in practice — checkout
+    // auth already requires a keyed row — but must not disagree when it fires.
     let agent_policy = state.db.get_agent_policy(agent_id)?.unwrap_or_else(|| {
         let allow = parse_allowlist();
         crate::store::AgentPolicy {
             agent_id: agent_id.to_string(),
-            max_cap: state.max_mandate_cap,
-            velocity_limit: 50,
-            velocity_window_secs: 60,
+            max_cap: crate::store::DEFAULT_AGENT_MAX_CAP,
+            velocity_limit: crate::store::DEFAULT_VELOCITY_LIMIT,
+            velocity_window_secs: crate::store::DEFAULT_VELOCITY_WINDOW_SECS,
             allowed_merchants: allow,
         }
     });

@@ -198,6 +198,21 @@ fn m5_pagination_filters_in_sql_not_memory() {
 }
 
 #[test]
+fn h2_new_agent_defaults_are_unified() {
+    // H2 regression: first-touch defaults must equal the shared constants the
+    // checkout fallback uses — no more 50k-vs-100k split by code path.
+    use mandatepay::store::{
+        DEFAULT_AGENT_MAX_CAP, DEFAULT_VELOCITY_LIMIT, DEFAULT_VELOCITY_WINDOW_SECS,
+    };
+    let db = Db::open(":memory:").unwrap();
+    let (p, _) = db.get_or_create_agent("h2-agent").unwrap();
+    assert_eq!(p.max_cap, DEFAULT_AGENT_MAX_CAP);
+    assert_eq!(p.velocity_limit, DEFAULT_VELOCITY_LIMIT);
+    assert_eq!(p.velocity_window_secs, DEFAULT_VELOCITY_WINDOW_SECS);
+    assert_eq!(DEFAULT_AGENT_MAX_CAP, 50_000);
+}
+
+#[test]
 fn h1_sorted_pagination_reflects_global_order() {
     // H1 regression: with more rows than the page, sort must apply before
     // LIMIT/OFFSET. sort-after-paginate returned the first N by id, sorted —

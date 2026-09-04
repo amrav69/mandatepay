@@ -33,6 +33,12 @@ pub struct AgentPolicy {
     pub allowed_merchants: Vec<String>,
 }
 
+/// H2/M44: single source of truth for new-agent defaults. The checkout fallback
+/// for unknown agents uses these too (previously the server cap, 2x looser).
+pub const DEFAULT_AGENT_MAX_CAP: u64 = 50_000;
+pub const DEFAULT_VELOCITY_LIMIT: u32 = 50;
+pub const DEFAULT_VELOCITY_WINDOW_SECS: u64 = 60;
+
 pub struct Db(Mutex<Connection>);
 
 // M4: helpers for safe i64 -> u32/u64 conversion with explicit bounds check (no silent wrap)
