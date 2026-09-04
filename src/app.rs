@@ -350,11 +350,27 @@ pub async fn checkout(
     let mut order_id = None;
     if matches!(decision, Decision::Allow { .. }) {
         // Second cache check: another concurrent Allow may have just completed and cached.
-        // Also verify cached amount matches current request (fix #1).
-        if let Ok(Some((cached_id, cached_amount))) = state
+        // Re-validate stateless gates + caps (policy may have changed between evaluate
+        // and here) and require amount match.
+        let second_cached = state
             .db
             .get_cached_order_with_amount(&req.mandate.mandate_id)
+            .ok()
+            .flatten();
+        if let Some((cached_id, cached_amount)) = second_cached
             && req.amount_minor == cached_amount
+            && matches!(
+                policy::validate_stateless(
+                    &state.authority,
+                    &req.mandate,
+                    &req.signature,
+                    req.amount_minor,
+                    &allowed_merchants,
+                ),
+                Decision::Allow { .. }
+            )
+            && req.amount_minor <= agent_policy.max_cap
+            && req.mandate.max_amount_minor <= agent_policy.max_cap
         {
             order_id = Some(cached_id);
             reason = format!("{reason} (idempotent replay: cached order returned)");
@@ -374,7 +390,18 @@ pub async fn checkout(
                     .db
                     .get_cached_order_with_amount(&req.mandate.mandate_id)
                 {
-                    if req.amount_minor == cached_amount {
+                    let still_valid = matches!(
+                        policy::validate_stateless(
+                            &state.authority,
+                            &req.mandate,
+                            &req.signature,
+                            req.amount_minor,
+                            &allowed_merchants,
+                        ),
+                        Decision::Allow { .. }
+                    ) && req.amount_minor <= agent_policy.max_cap
+                        && req.mandate.max_amount_minor <= agent_policy.max_cap;
+                    if req.amount_minor == cached_amount && still_valid {
                         order_id = Some(cached_id);
                         reason = format!("{reason} (idempotent replay: cached order returned)");
                     } else {
@@ -382,7 +409,7 @@ pub async fn checkout(
                             tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight amount mismatch");
                         }
                         label = "REJECT";
-                        reason = "duplicate mandate_id: order already in flight (amount mismatch)"
+                        reason = "duplicate mandate_id: order already in flight (amount or policy mismatch)"
                             .into();
                     }
                 } else if let Ok(Some(cached)) = state.db.get_cached_order(&req.mandate.mandate_id)
