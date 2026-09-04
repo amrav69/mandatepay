@@ -42,11 +42,16 @@ pub fn canonical_bytes(mandate: &Mandate) -> Result<Vec<u8>, VerifyError> {
     Ok(out)
 }
 
+/// M1: never panic on clock skew. Pre-epoch clocks fail closed to 0 + warn
+/// instead of aborting request handlers.
 pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_secs()
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(e) => {
+            tracing::warn!(error = %e, "system clock before unix epoch, returning 0");
+            0
+        }
+    }
 }
 
 pub fn new_token(prefix: &str, entropy_bytes: usize) -> String {
