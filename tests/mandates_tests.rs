@@ -81,7 +81,7 @@ fn over_cap_amount_rejected_by_policy() {
     assert!(
         matches!(
             policy::evaluate(&auth, &m, &sig, CAP * 10, &allow, &db),
-            Decision::Reject { reason } if reason.contains("exceeds mandate cap")
+            Decision::Reject { reason } if reason.contains("exceeds mandate policy")
         ),
         "spending beyond the signed cap must be rejected"
     );

@@ -802,7 +802,7 @@ async fn agent_cap_below_mandate_cap_rejects_checkout() {
         body["reason"]
             .as_str()
             .unwrap()
-            .contains("exceeds agent cap")
+            .contains("exceeds agent policy")
     );
 }
 

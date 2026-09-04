@@ -27,13 +27,11 @@ pub fn validate_stateless(
         return reject("unsupported mandate version");
     }
     if mandate.action != "create_order" {
-        return reject(format!(
-            "action '{}' is outside governor scope",
-            mandate.action
-        ));
+        // Generic: echoing the forged value back creates a policy oracle.
+        return reject("action outside governor scope");
     }
     if mandate.currency != "INR" {
-        return reject(format!("currency '{}' not supported", mandate.currency));
+        return reject("currency not supported");
     }
     if mandate.max_amount_minor == 0 {
         return reject("max_amount_minor must be positive");
@@ -57,19 +55,15 @@ pub fn validate_stateless(
     }
 
     if !allowed_merchants.iter().any(|m| m == &mandate.merchant_id) {
-        return reject(format!(
-            "merchant '{}' is not allowlisted",
-            mandate.merchant_id
-        ));
+        // Generic: echoing the forged value back creates a policy oracle.
+        return reject("merchant not allowlisted");
     }
     if amount_minor == 0 {
         return reject("amount_minor must be positive");
     }
     if amount_minor > mandate.max_amount_minor {
-        return reject(format!(
-            "amount {amount_minor} exceeds mandate cap {}",
-            mandate.max_amount_minor
-        ));
+        // Generic: exact caps stay server-side.
+        return reject("amount exceeds mandate policy");
     }
 
     Decision::Allow {

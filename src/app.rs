@@ -253,10 +253,8 @@ pub async fn checkout(
     });
 
     if req.mandate.max_amount_minor > agent_policy.max_cap {
-        let reason = format!(
-            "mandate cap {} exceeds agent cap {}",
-            req.mandate.max_amount_minor, agent_policy.max_cap
-        );
+        // Generic: exact per-agent caps stay server-side (no policy oracle).
+        let reason = "amount exceeds agent policy".to_string();
         state.db.record_decision(
             "/v1/checkout",
             "REJECT",
@@ -271,10 +269,8 @@ pub async fn checkout(
         }));
     }
     if req.amount_minor > agent_policy.max_cap {
-        let reason = format!(
-            "amount {} exceeds agent cap {}",
-            req.amount_minor, agent_policy.max_cap
-        );
+        // Generic: exact per-agent caps stay server-side (no policy oracle).
+        let reason = "amount exceeds agent policy".to_string();
         state.db.record_decision(
             "/v1/checkout",
             "REJECT",
