@@ -500,6 +500,27 @@ async fn public_decisions_redact_nonce_master_sees_full() {
 }
 
 #[tokio::test]
+async fn list_agents_rejects_unknown_sort_order() {
+    // Unknown sort/order params are 400, not silent defaults.
+    let (app, master) = test_app();
+    for uri in ["/v1/agents?sort=nope", "/v1/agents?order=sideways"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("x-api-key", &master)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn list_agents_requires_auth() {
     // C2 regression: list must be at least as protected as single-agent reads.
     let (app, _) = test_app();

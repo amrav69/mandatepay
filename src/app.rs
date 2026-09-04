@@ -663,12 +663,19 @@ pub async fn list_agents(
     let offset = params.offset.unwrap_or(0).max(0);
     // H1: filter AND sort in SQL before LIMIT/OFFSET so pages reflect the
     // globally-sorted filtered set (sort-after-paginate returned wrong pages).
+    // Unknown sort/order are 400, not silent defaults (typos must not look fine).
     let sort = params.sort.as_deref().unwrap_or("agent_id");
-    let desc = params
-        .order
-        .as_deref()
-        .unwrap_or("asc")
-        .eq_ignore_ascii_case("desc");
+    if !matches!(sort, "agent_id" | "max_cap" | "velocity_limit") {
+        return Err(AppError::BadRequest(format!("unknown sort field '{sort}'")));
+    }
+    let order_raw = params.order.as_deref().unwrap_or("asc");
+    let desc = if order_raw.eq_ignore_ascii_case("desc") {
+        true
+    } else if order_raw.eq_ignore_ascii_case("asc") {
+        false
+    } else {
+        return Err(AppError::BadRequest(format!("unknown order '{order_raw}'")));
+    };
     let agents = state
         .db
         .list_agents_paginated_filtered(limit, offset, params.q.as_deref(), sort, desc)
