@@ -696,6 +696,11 @@ pub async fn update_agent(
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Normalize like create/get so " foo " and "foo" address one agent.
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
     if let Some(v) = req.max_cap {
         if v == 0 {
             return Err(AppError::BadRequest("max_cap must be positive".into()));
@@ -759,6 +764,11 @@ pub async fn delete_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Normalize like create/get so " foo " and "foo" address one agent.
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
     let deleted = state
         .db
         .delete_agent(&id)

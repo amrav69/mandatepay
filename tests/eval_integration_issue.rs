@@ -323,6 +323,46 @@ async fn oversized_caps_rejected_400_not_stored() {
 }
 
 #[tokio::test]
+async fn padded_agent_id_addresses_same_agent() {
+    // Whitespace-padded path ids must normalize to the same agent everywhere.
+    let (app, master) = test_app();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/agents/%20pad-me%20")
+                .header("content-type", "application/json")
+                .header("x-api-key", &master)
+                .body(Body::from(json!({"max_cap": 42424}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents/pad-me")
+                .header("x-api-key", &master)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["agent_id"], "pad-me");
+    assert_eq!(body["max_cap"], 42424);
+}
+
+#[tokio::test]
 async fn get_agent_returns_policy() {
     let (app, master) = test_app();
     let resp = app
