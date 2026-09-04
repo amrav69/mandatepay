@@ -91,16 +91,70 @@ impl Authority {
     }
 }
 
+/// H3: loud fallback. Every ephemeral path warns with the reason so a typo'd
+/// MANDATEPAY_SEED cannot silently rotate the authority key.
 pub fn load_seed() -> [u8; 32] {
-    if let Ok(s) = std::env::var("MANDATEPAY_SEED")
-        && let Ok(raw) = B64.decode(s.trim())
-        && raw.len() == 32
-    {
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&raw);
-        return seed;
+    match std::env::var("MANDATEPAY_SEED") {
+        Ok(s) if !s.trim().is_empty() => match B64.decode(s.trim()) {
+            Ok(raw) if raw.len() == 32 => {
+                let mut seed = [0u8; 32];
+                seed.copy_from_slice(&raw);
+                return seed;
+            }
+            Ok(raw) => {
+                tracing::warn!(
+                    len = raw.len(),
+                    "MANDATEPAY_SEED decoded to wrong length, using ephemeral key"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "MANDATEPAY_SEED is not valid base64, using ephemeral key");
+            }
+        },
+        Ok(_) => {
+            tracing::warn!("MANDATEPAY_SEED set but empty, using ephemeral key");
+        }
+        Err(_) => {
+            tracing::warn!("MANDATEPAY_SEED not set, using ephemeral key per boot");
+        }
     }
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).expect("os randomness unavailable");
     seed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_seed_uses_valid_configured_value() {
+        // H3: a well-formed seed must be honored exactly (no silent rotation).
+        let prev = std::env::var("MANDATEPAY_SEED").ok();
+        let raw = [9u8; 32];
+        unsafe { std::env::set_var("MANDATEPAY_SEED", B64.encode(raw)) };
+        assert_eq!(load_seed(), raw);
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("MANDATEPAY_SEED", v),
+                None => std::env::remove_var("MANDATEPAY_SEED"),
+            }
+        }
+    }
+
+    #[test]
+    fn load_seed_falls_back_loudly_on_garbage() {
+        // H3: garbage seed must not panic and must not return the valid value.
+        let prev = std::env::var("MANDATEPAY_SEED").ok();
+        unsafe { std::env::set_var("MANDATEPAY_SEED", "%%%not-base64%%%") };
+        let _ = load_seed();
+        unsafe { std::env::set_var("MANDATEPAY_SEED", B64.encode([0u8; 31])) };
+        let _ = load_seed();
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("MANDATEPAY_SEED", v),
+                None => std::env::remove_var("MANDATEPAY_SEED"),
+            }
+        }
+    }
 }
