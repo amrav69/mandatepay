@@ -88,6 +88,23 @@ fn hash_candidate(provided: &str) -> String {
     hex::encode(Sha256::digest(provided.as_bytes()))
 }
 
+impl Db {
+    /// Parse the stored allowlist JSON, falling back to legacy CSV split with a
+    /// warning so corrupt rows are visible instead of silently reinterpreted.
+    fn parse_merchants(raw: &str) -> Vec<String> {
+        match serde_json::from_str::<Vec<String>>(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "agents.allowed_merchants is not JSON, falling back to CSV split");
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+        }
+    }
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +147,16 @@ CREATE TABLE IF NOT EXISTS agent_velocity (
 
 impl Db {
     fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        // PRAGMA table_info cannot take a bound parameter; table/column are
+        // internal constants only, allowlisted so a future caller cannot inject.
+        const ALLOWED_TABLES: &[&str] = &["decisions", "orders", "agents", "nonces"];
+        if !ALLOWED_TABLES.contains(&table) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "unexpected table {table}"
+            )));
+        }
+        let sql = format!("PRAGMA table_info(\"{table}\")");
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             let name: String = row.get(1)?;
             Ok(name)
@@ -572,13 +598,7 @@ impl Db {
                     3,
                     "velocity_window_secs",
                 )?,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                    merchants
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                }),
+                allowed_merchants: Self::parse_merchants(&merchants),
             };
             drop(rows);
             drop(stmt);
@@ -718,13 +738,7 @@ impl Db {
                     3,
                     "velocity_window_secs",
                 )?,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                    merchants
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                }),
+                allowed_merchants: Self::parse_merchants(&merchants),
             }))
         } else {
             Ok(None)
@@ -763,33 +777,30 @@ impl Db {
         // Build dynamic UPDATE with COALESCE-like behavior: update only Some values.
         // Use separate executes to keep it single atomic transaction per caller lock.
         // Each field is updated atomically inside the mutex, no read-modify-write across threads losing updates.
+        // Single timestamp for the whole call so updated_at is consistent.
         if let Some(v) = max_cap {
             conn.execute(
                 "UPDATE agents SET max_cap = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![checked_i64(v, "max_cap")?, unix_now() as i64, agent_id],
+                params![checked_i64(v, "max_cap")?, now, agent_id],
             )?;
         }
         if let Some(v) = velocity_limit {
             conn.execute(
                 "UPDATE agents SET velocity_limit = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![v as i64, now, agent_id],
             )?;
         }
         if let Some(v) = velocity_window_secs {
             conn.execute(
                 "UPDATE agents SET velocity_window_secs = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![
-                    checked_i64(v, "velocity_window_secs")?,
-                    unix_now() as i64,
-                    agent_id
-                ],
+                params![checked_i64(v, "velocity_window_secs")?, now, agent_id],
             )?;
         }
         if let Some(v) = allowed_merchants {
             let merchants = serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string());
             conn.execute(
                 "UPDATE agents SET allowed_merchants = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![merchants, unix_now() as i64, agent_id],
+                params![merchants, now, agent_id],
             )?;
         } else if max_cap.is_none() && velocity_limit.is_none() && velocity_window_secs.is_none() {
             // Touch updated_at even if no field changed? Not needed, but keep idempotency.
@@ -878,13 +889,7 @@ impl Db {
                     3,
                     "velocity_window_secs",
                 )?,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                    merchants
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                }),
+                allowed_merchants: Self::parse_merchants(&merchants),
             })
         })?;
         rows.collect()
@@ -937,13 +942,7 @@ impl Db {
                     3,
                     "velocity_window_secs",
                 )?,
-                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                    merchants
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                }),
+                allowed_merchants: Self::parse_merchants(&merchants),
             })
         };
         if let Some(needle) = filtered {
