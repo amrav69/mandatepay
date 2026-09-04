@@ -184,17 +184,46 @@ fn m5_pagination_filters_in_sql_not_memory() {
     // Paginated fetch: limit 2 offset 0 would only see agent-00, agent-01 if filtering after pagination,
     // so "zzz-match" would be invisible. With SQL filtering it must be found regardless of pagination window.
     let page = db
-        .list_agents_paginated_filtered(2, 0, Some("zzz"))
+        .list_agents_paginated_filtered(2, 0, Some("zzz"), "agent_id", false)
         .unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].agent_id, "zzz-match");
     // Second page with q that matches many should still paginate correctly within filtered set
     let page2 = db
-        .list_agents_paginated_filtered(5, 5, Some("agent-"))
+        .list_agents_paginated_filtered(5, 5, Some("agent-"), "agent_id", false)
         .unwrap();
     // Filtered set is 10 agents (agent-00..09), offset 5 limit 5 => 5 rows
     assert_eq!(page2.len(), 5);
     assert_eq!(page2[0].agent_id, "agent-05");
+}
+
+#[test]
+fn h1_sorted_pagination_reflects_global_order() {
+    // H1 regression: with more rows than the page, sort must apply before
+    // LIMIT/OFFSET. sort-after-paginate returned the first N by id, sorted —
+    // hiding the true top rows.
+    let db = Db::open(":memory:").unwrap();
+    for (id, cap) in [
+        ("h1-a", 1000),
+        ("h1-b", 5000),
+        ("h1-c", 3000),
+        ("h1-d", 4000),
+        ("h1-e", 2000),
+    ] {
+        db.try_create_agent(id, Some(cap), None, None, None)
+            .unwrap();
+    }
+    let page = db
+        .list_agents_paginated_filtered(2, 0, None, "max_cap", true)
+        .unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].agent_id, "h1-b");
+    assert_eq!(page[1].agent_id, "h1-d");
+    let page2 = db
+        .list_agents_paginated_filtered(2, 2, None, "max_cap", true)
+        .unwrap();
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2[0].agent_id, "h1-c");
 }
 
 #[test]

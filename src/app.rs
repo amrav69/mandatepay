@@ -569,40 +569,18 @@ pub async fn list_agents(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 200);
     let offset = params.offset.unwrap_or(0).max(0);
-    // M5: filter in SQL, not in-memory pagination, so LIMIT/OFFSET applies to filtered set.
-    let mut agents = state
-        .db
-        .list_agents_paginated_filtered(limit, offset, params.q.as_deref())
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    // H1: filter AND sort in SQL before LIMIT/OFFSET so pages reflect the
+    // globally-sorted filtered set (sort-after-paginate returned wrong pages).
     let sort = params.sort.as_deref().unwrap_or("agent_id");
     let desc = params
         .order
         .as_deref()
         .unwrap_or("asc")
         .eq_ignore_ascii_case("desc");
-    match sort {
-        "max_cap" => agents.sort_by(|a, b| {
-            if desc {
-                b.max_cap.cmp(&a.max_cap)
-            } else {
-                a.max_cap.cmp(&b.max_cap)
-            }
-        }),
-        "velocity_limit" => agents.sort_by(|a, b| {
-            if desc {
-                b.velocity_limit.cmp(&a.velocity_limit)
-            } else {
-                a.velocity_limit.cmp(&b.velocity_limit)
-            }
-        }),
-        _ => agents.sort_by(|a, b| {
-            if desc {
-                b.agent_id.cmp(&a.agent_id)
-            } else {
-                a.agent_id.cmp(&b.agent_id)
-            }
-        }),
-    }
+    let agents = state
+        .db
+        .list_agents_paginated_filtered(limit, offset, params.q.as_deref(), sort, desc)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(json!({ "agents": agents })))
 }
 

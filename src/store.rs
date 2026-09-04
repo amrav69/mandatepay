@@ -852,27 +852,48 @@ impl Db {
         Ok(changed > 0)
     }
 
-    pub fn list_agents_paginated(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> rusqlite::Result<Vec<AgentPolicy>> {
-        // M5 legacy entrypoint kept for callers without search; delegates to filtered version with empty q.
-        self.list_agents_paginated_filtered(limit, offset, None)
-    }
-
-    /// M5: filter in SQL so pagination window correctly reflects matches.
+    /// H1: filter AND sort in SQL so LIMIT/OFFSET applies to the filtered,
+    /// globally-sorted set. `sort`/`desc` are allowlisted (no user input is
+    /// interpolated beyond validated identifiers).
     pub fn list_agents_paginated_filtered(
         &self,
         limit: i64,
         offset: i64,
         q: Option<&str>,
+        sort: &str,
+        desc: bool,
     ) -> rusqlite::Result<Vec<AgentPolicy>> {
+        let order_col = match sort {
+            "max_cap" => "max_cap",
+            "velocity_limit" => "velocity_limit",
+            _ => "agent_id",
+        };
+        let dir = if desc { "DESC" } else { "ASC" };
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let filtered = q
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+        let map_row = |row: &rusqlite::Row<'_>| {
+            let merchants: String = row.get(4)?;
+            Ok(AgentPolicy {
+                agent_id: row.get(0)?,
+                max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
+                velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
+                velocity_window_secs: checked_u64(
+                    row.get::<_, i64>(3)?,
+                    3,
+                    "velocity_window_secs",
+                )?,
+                allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
+                    merchants
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }),
+            })
+        };
         if let Some(needle) = filtered {
             // Use LIKE with ESCAPE to handle % and _ safely; lowercase comparison for case-insensitive.
             let pattern = format!(
@@ -882,54 +903,19 @@ impl Db {
                     .replace('%', "\\%")
                     .replace('_', "\\_")
             );
-            let mut stmt = conn.prepare(
-                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE LOWER(agent_id) LIKE ?1 ESCAPE '\\' ORDER BY agent_id ASC LIMIT ?2 OFFSET ?3",
-            )?;
-            let rows = stmt.query_map(params![pattern, limit, offset], |row| {
-                let merchants: String = row.get(4)?;
-                Ok(AgentPolicy {
-                    agent_id: row.get(0)?,
-                    max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
-                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
-                    velocity_window_secs: checked_u64(
-                        row.get::<_, i64>(3)?,
-                        3,
-                        "velocity_window_secs",
-                    )?,
-                    allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                        merchants
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    }),
-                })
-            })?;
+            // order_col/dir are allowlisted above; pattern/limit/offset are bound params.
+            let sql = format!(
+                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE LOWER(agent_id) LIKE ?1 ESCAPE '\\' ORDER BY {order_col} {dir} LIMIT ?2 OFFSET ?3"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![pattern, limit, offset], map_row)?;
             rows.collect()
         } else {
-            let mut stmt = conn.prepare(
-                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY agent_id ASC LIMIT ?1 OFFSET ?2",
-            )?;
-            let rows = stmt.query_map(params![limit, offset], |row| {
-                let merchants: String = row.get(4)?;
-                Ok(AgentPolicy {
-                    agent_id: row.get(0)?,
-                    max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
-                    velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
-                    velocity_window_secs: checked_u64(
-                        row.get::<_, i64>(3)?,
-                        3,
-                        "velocity_window_secs",
-                    )?,
-                    allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
-                        merchants
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    }),
-                })
-            })?;
+            let sql = format!(
+                "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents ORDER BY {order_col} {dir} LIMIT ?1 OFFSET ?2"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params![limit, offset], map_row)?;
             rows.collect()
         }
     }
