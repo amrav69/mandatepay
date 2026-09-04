@@ -692,6 +692,15 @@ pub async fn update_agent(
             "velocity_window_secs exceeds i64::MAX".into(),
         ));
     }
+    // Absurd windows would never reset; store re-checks (InvalidParameterName -> 400).
+    if let Some(v) = req.velocity_window_secs
+        && v > crate::store::MAX_VELOCITY_WINDOW_SECS
+    {
+        return Err(AppError::BadRequest(format!(
+            "velocity_window_secs must be 1..={}",
+            crate::store::MAX_VELOCITY_WINDOW_SECS
+        )));
+    }
     let policy = state
         .db
         .update_agent(
@@ -772,6 +781,15 @@ pub async fn create_agent(
         return Err(AppError::BadRequest(
             "velocity_window_secs exceeds i64::MAX".into(),
         ));
+    }
+    // Absurd windows would never reset; store re-checks (InvalidParameterName -> 400).
+    if let Some(v) = req.velocity_window_secs
+        && v > crate::store::MAX_VELOCITY_WINDOW_SECS
+    {
+        return Err(AppError::BadRequest(format!(
+            "velocity_window_secs must be 1..={}",
+            crate::store::MAX_VELOCITY_WINDOW_SECS
+        )));
     }
     // Atomic: INSERT OR IGNORE returns 0 if already exists — no separate existence check (avoids TOCTOU).
     let (inserted, new_key) = state

@@ -34,10 +34,14 @@ pub struct AgentPolicy {
 }
 
 /// H2/M44: single source of truth for new-agent defaults. The checkout fallback
-/// for unknown agents uses these too (previously the server cap, 2x looser).
+/// for unknown agents uses these too (previously the looser server cap, 2x looser).
 pub const DEFAULT_AGENT_MAX_CAP: u64 = 50_000;
 pub const DEFAULT_VELOCITY_LIMIT: u32 = 50;
 pub const DEFAULT_VELOCITY_WINDOW_SECS: u64 = 60;
+/// Upper bound for velocity windows. Larger windows collapse the aligned window
+/// computation toward window_start 0 and never reset in practice; beyond a week
+/// is a caller bug, rejected at both layers (C3 covers the i64::MAX wrap).
+pub const MAX_VELOCITY_WINDOW_SECS: u64 = 604_800;
 
 pub struct Db(Mutex<Connection>);
 
@@ -674,6 +678,11 @@ impl Db {
                 "velocity_window_secs must be positive".to_string(),
             ));
         }
+        if velocity_window_secs as u64 > MAX_VELOCITY_WINDOW_SECS {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "velocity_window_secs exceeds max {MAX_VELOCITY_WINDOW_SECS}"
+            )));
+        }
         let window_start = now - (now % velocity_window_secs as u64);
         conn.execute(
             "INSERT INTO agent_velocity (agent_id, window_start, count) VALUES (?1, ?2, 1)
@@ -727,6 +736,19 @@ impl Db {
         velocity_window_secs: Option<u64>,
         allowed_merchants: Option<Vec<String>>,
     ) -> rusqlite::Result<AgentPolicy> {
+        if let Some(v) = max_cap {
+            checked_i64(v, "max_cap")?;
+        }
+        if let Some(v) = velocity_window_secs
+            && (v == 0 || v > MAX_VELOCITY_WINDOW_SECS)
+        {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "velocity_window_secs must be 1..={MAX_VELOCITY_WINDOW_SECS}"
+            )));
+        }
+        if let Some(v) = velocity_window_secs {
+            checked_i64(v, "velocity_window_secs")?;
+        }
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         // Ensure row exists first (atomic insert) then update only provided columns.
         let now = unix_now() as i64;
@@ -804,8 +826,13 @@ impl Db {
     ) -> rusqlite::Result<(bool, Option<String>)> {
         let max_cap_val = checked_i64(max_cap.unwrap_or(50000), "max_cap")?;
         let velocity_limit_val = velocity_limit.unwrap_or(50) as i64;
-        let velocity_window_secs_val =
-            checked_i64(velocity_window_secs.unwrap_or(60), "velocity_window_secs")?;
+        let win_v = velocity_window_secs.unwrap_or(60);
+        if win_v == 0 || win_v > MAX_VELOCITY_WINDOW_SECS {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "velocity_window_secs must be 1..={MAX_VELOCITY_WINDOW_SECS}"
+            )));
+        }
+        let velocity_window_secs_val = checked_i64(win_v, "velocity_window_secs")?;
         let merchants = match allowed_merchants {
             Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
             None => DEFAULT_ALLOWLIST_JSON.to_string(),

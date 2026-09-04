@@ -342,6 +342,32 @@ fn c3_agent_u64_to_i64_rejected_not_wrapped() {
             .map(|(b, _)| b)
             .unwrap()
     );
+    // Absurd-but-in-i64-range windows rejected at store layer too.
+    assert!(
+        db.try_create_agent("c3-win-big", None, None, Some(10u64.pow(12)), None)
+            .is_err()
+    );
+    assert!(
+        db.update_agent("c3-upd", None, None, Some(10u64.pow(12)), None)
+            .is_err()
+    );
+    // Legacy poisoned row (written before the bound existed) fails velocity loudly.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c3win.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL, velocity_limit INTEGER NOT NULL, velocity_window_secs INTEGER NOT NULL, allowed_merchants TEXT NOT NULL, api_key_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, api_key_hash, created_at, updated_at) VALUES ('win-poison', 50000, 50, 1000000000000, '[\"merchant-001\"]', 'abc', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let db3 = Db::open(path.to_str().unwrap()).unwrap();
+    assert!(db3.check_velocity("win-poison").is_err());
 }
 
 #[test]

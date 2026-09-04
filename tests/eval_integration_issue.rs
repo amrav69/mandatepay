@@ -280,6 +280,7 @@ async fn oversized_caps_rejected_400_not_stored() {
         json!({"agent_id": "c3-max-over", "max_cap": overflow}),
         json!({"agent_id": "c3-win-u64", "velocity_window_secs": u64::MAX}),
         json!({"agent_id": "c3-win-over", "velocity_window_secs": overflow}),
+        json!({"agent_id": "c3-win-big", "velocity_window_secs": 10u64.pow(12)}),
     ];
     for body in bodies {
         let resp = app
