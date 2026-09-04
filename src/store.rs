@@ -52,6 +52,25 @@ fn checked_u64(v: i64, col: usize, field: &str) -> rusqlite::Result<u64> {
     Ok(v as u64)
 }
 
+/// C1: default allowlist for brand-new agents (per-agent value is authoritative after creation).
+pub const DEFAULT_ALLOWLIST_JSON: &str = r#"["merchant-001"]"#;
+
+/// C1: generate a fresh per-agent API key (32B base64) and its SHA256 hex hash.
+/// Plaintext is returned once to the admin caller; only the hash is stored.
+pub fn generate_agent_key() -> (String, String) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let mut raw = [0u8; 32];
+    getrandom::fill(&mut raw).expect("os randomness unavailable");
+    let plaintext = B64.encode(raw);
+    let hash = hex::encode(Sha256::digest(plaintext.as_bytes()));
+    (plaintext, hash)
+}
+
+/// C1: hash a candidate plaintext the same way for constant-time comparison.
+fn hash_candidate(provided: &str) -> String {
+    hex::encode(Sha256::digest(provided.as_bytes()))
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +99,7 @@ CREATE TABLE IF NOT EXISTS agents (
     velocity_limit INTEGER NOT NULL DEFAULT 50,
     velocity_window_secs INTEGER NOT NULL DEFAULT 60,
     allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]',
+    api_key_hash TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -136,6 +156,29 @@ impl Db {
                 "ALTER TABLE orders ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'",
                 [],
             )?;
+        }
+        // Migration v3 (C1): agents.api_key_hash for per-agent keys.
+        // Existing rows keep '' until rotated; operator must call
+        // POST /v1/agents/:id/rotate with the master key to issue a usable key.
+        let has_key_hash = Self::column_exists(&conn, "agents", "api_key_hash")?;
+        if !has_key_hash {
+            conn.execute(
+                "ALTER TABLE agents ADD COLUMN api_key_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        let legacy_unkeyed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE api_key_hash = ''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if legacy_unkeyed > 0 {
+            tracing::warn!(
+                count = legacy_unkeyed,
+                "agents table has rows without api_key_hash; rotate to issue keys"
+            );
         }
         // Backfill legacy audit_hash chain if any row still has empty hash (DB upgraded from pre-chain version)
         let empty_count: i64 = conn
@@ -477,15 +520,22 @@ impl Db {
         }
     }
 
-    pub fn get_or_create_agent(&self, agent_id: &str) -> rusqlite::Result<AgentPolicy> {
+    /// C1: first-touch create. Returns (policy, Some(plaintext_key)) only when the
+    /// row was newly created or a legacy row without a key was migrated; otherwise
+    /// (existing keyed row) returns (policy, None) since plaintext is unrecoverable.
+    pub fn get_or_create_agent(
+        &self,
+        agent_id: &str,
+    ) -> rusqlite::Result<(AgentPolicy, Option<String>)> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants FROM agents WHERE agent_id = ?1"
+            "SELECT agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, api_key_hash FROM agents WHERE agent_id = ?1"
         )?;
         let mut rows = stmt.query(params![agent_id])?;
         if let Some(row) = rows.next()? {
             let merchants: String = row.get(4)?;
-            Ok(AgentPolicy {
+            let existing_hash: String = row.get(5)?;
+            let policy = AgentPolicy {
                 agent_id: row.get(0)?,
                 max_cap: checked_u64(row.get::<_, i64>(1)?, 1, "max_cap")?,
                 velocity_limit: checked_u32(row.get::<_, i64>(2)?, 2, "velocity_limit")?,
@@ -501,22 +551,85 @@ impl Db {
                         .filter(|s| !s.is_empty())
                         .collect()
                 }),
-            })
-        } else {
-            let now = unix_now();
-            conn.execute(
-                "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
-                 VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
-                params![agent_id, now as i64],
-            )?;
-            Ok(AgentPolicy {
+            };
+            drop(rows);
+            drop(stmt);
+            if existing_hash.is_empty() {
+                let (plaintext, hash) = generate_agent_key();
+                conn.execute(
+                    "UPDATE agents SET api_key_hash = ?1, updated_at = ?2 WHERE agent_id = ?3",
+                    params![hash, unix_now() as i64, agent_id],
+                )?;
+                tracing::warn!(agent_id = %agent_id, "migrated legacy agent without key; new key issued once");
+                return Ok((policy, Some(plaintext)));
+            }
+            return Ok((policy, None));
+        }
+        drop(rows);
+        drop(stmt);
+        let now = unix_now();
+        let (plaintext, hash) = generate_agent_key();
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, api_key_hash, created_at, updated_at)
+             VALUES (?1, 50000, 50, 60, ?2, ?3, ?4, ?4)",
+            params![agent_id, DEFAULT_ALLOWLIST_JSON, hash, now as i64],
+        )?;
+        Ok((
+            AgentPolicy {
                 agent_id: agent_id.to_string(),
                 max_cap: 50000,
                 velocity_limit: 50,
                 velocity_window_secs: 60,
                 allowed_merchants: vec!["merchant-001".to_string()],
-            })
+            },
+            Some(plaintext),
+        ))
+    }
+
+    /// C1: verify a presented per-agent key against the stored SHA256 hash.
+    /// Unknown agents and empty hashes fail closed.
+    pub fn verify_agent_key(&self, agent_id: &str, provided: &str) -> rusqlite::Result<bool> {
+        if provided.trim().is_empty() || agent_id.trim().is_empty() {
+            return Ok(false);
         }
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let stored: Option<String> = match conn.query_row(
+            "SELECT api_key_hash FROM agents WHERE agent_id = ?1",
+            params![agent_id.trim()],
+            |r| r.get(0),
+        ) {
+            Ok(h) => Some(h),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e),
+        };
+        let Some(hash) = stored else {
+            return Ok(false);
+        };
+        if hash.is_empty() {
+            return Ok(false);
+        }
+        let candidate = hash_candidate(provided.trim());
+        use subtle::ConstantTimeEq;
+        Ok(candidate.as_bytes().ct_eq(hash.as_bytes()).into())
+    }
+
+    /// C1: rotate an agent key (master-gated at HTTP layer). Returns new plaintext once.
+    pub fn rotate_agent_key(&self, agent_id: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agents WHERE agent_id = ?1)",
+            params![agent_id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let (plaintext, hash) = generate_agent_key();
+        conn.execute(
+            "UPDATE agents SET api_key_hash = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![hash, unix_now() as i64, agent_id],
+        )?;
+        Ok(Some(plaintext))
     }
 
     pub fn check_velocity(&self, agent_id: &str) -> rusqlite::Result<bool> {
@@ -649,9 +762,10 @@ impl Db {
         })
     }
 
-    /// Atomic insert for `POST /v1/agents` — returns `true` if a new row was inserted,
-    /// `false` if the agent already existed. Caller must map `false` to `400 already exists`
-    /// without a prior `SELECT` to avoid TOCTOU.
+    /// Atomic insert for `POST /v1/agents` — returns `(inserted, plaintext_key)`.
+    /// `plaintext_key` is `Some` only on insert (returned once to admin caller).
+    /// Caller must map `false` to `400 already exists` without a prior `SELECT`
+    /// to avoid TOCTOU.
     pub fn try_create_agent(
         &self,
         agent_id: &str,
@@ -659,28 +773,33 @@ impl Db {
         velocity_limit: Option<u32>,
         velocity_window_secs: Option<u64>,
         allowed_merchants: Option<Vec<String>>,
-    ) -> rusqlite::Result<bool> {
+    ) -> rusqlite::Result<(bool, Option<String>)> {
         let max_cap_val = max_cap.unwrap_or(50000) as i64;
         let velocity_limit_val = velocity_limit.unwrap_or(50) as i64;
         let velocity_window_secs_val = velocity_window_secs.unwrap_or(60) as i64;
         let merchants = match allowed_merchants {
             Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
-            None => r#"["merchant-001"]"#.to_string(),
+            None => DEFAULT_ALLOWLIST_JSON.to_string(),
         };
+        let (plaintext, hash) = generate_agent_key();
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let now = unix_now() as i64;
         let changed = conn.execute(
-            "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, api_key_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
             params![
                 agent_id,
                 max_cap_val,
                 velocity_limit_val,
                 velocity_window_secs_val,
                 merchants,
+                hash,
                 now
             ],
         )?;
-        Ok(changed > 0)
+        Ok((
+            changed > 0,
+            if changed > 0 { Some(plaintext) } else { None },
+        ))
     }
 
     pub fn list_agents(&self) -> rusqlite::Result<Vec<AgentPolicy>> {

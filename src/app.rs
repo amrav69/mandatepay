@@ -83,8 +83,9 @@ pub fn parse_max_cap() -> u64 {
         .unwrap_or(100_000)
 }
 
-/// Two-factor: `X-API-Key` proves *who* may submit (caller auth), the Ed25519 `signature` proves *what* is authorized (bounded, single-use).
-/// Both are required on `POST /v1/mandates` and `POST /v1/checkout`; read-only `GET /v1/decisions` etc. stay public for the dashboard.
+/// Master key (admin): gates `/v1/agents*` management endpoints only.
+/// Per-agent keys gate `POST /v1/mandates` and `POST /v1/checkout` via
+/// `require_agent_key` inside those handlers (needs the body `agent_id`).
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
@@ -97,10 +98,46 @@ pub async fn require_api_key(
     }
 }
 
+/// C1: verify the caller presents the per-agent key for `agent_id`.
+/// 401 when missing/unknown, 403 on mismatch for a known agent.
+fn require_agent_key(
+    db: &Db,
+    headers: &axum::http::HeaderMap,
+    agent_id: &str,
+) -> Result<(), AppError> {
+    let agent = agent_id.trim();
+    if agent.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
+    let Some(provided) = extract_api_key(headers) else {
+        return Err(AppError::Unauthorized("missing agent API key".into()));
+    };
+    let ok = db
+        .verify_agent_key(agent, &provided)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if ok {
+        return Ok(());
+    }
+    let known = db
+        .get_agent_policy(agent)
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .is_some();
+    if known {
+        Err(AppError::Forbidden("invalid API key for this agent".into()))
+    } else {
+        Err(AppError::Unauthorized(
+            "unknown agent or missing key; create via POST /v1/agents with master key".into(),
+        ))
+    }
+}
+
 pub async fn issue(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<IssueRequest>,
 ) -> Result<Json<Issued>, AppError> {
+    // C1: per-agent key must belong to the body agent_id. Master key does NOT work here.
+    require_agent_key(&state.db, &headers, &req.agent_id)?;
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     if req.currency != "INR" {
@@ -158,12 +195,14 @@ pub async fn issue(
 
 pub async fn checkout(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CheckoutRequest>,
 ) -> Result<Json<DecisionResponse>, AppError> {
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    // Two-factor: API key (who) already verified by `require_api_key` middleware;
+    // C1: per-agent key must belong to the mandate's agent_id. Master key does NOT work here.
     // Ed25519 signature (what) verified inside `policy::evaluate` next.
+    require_agent_key(&state.db, &headers, &req.mandate.agent_id)?;
     if req.amount_minor > i64::MAX as u64 {
         return Err(AppError::BadRequest("amount_minor exceeds i64::MAX".into()));
     }
@@ -493,15 +532,26 @@ pub async fn chain_verify(
     Ok(Json(json!({"chain_valid": ok})))
 }
 
+/// C1: returns flat policy; includes `api_key` plaintext only when newly minted
+/// (first touch or legacy migration). Existing keyed agents omit it (unrecoverable).
 pub async fn get_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let policy = state
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
+    let (policy, new_key) = state
         .db
-        .get_or_create_agent(&id)
+        .get_or_create_agent(trimmed)
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(json!(policy)))
+    let mut v = serde_json::to_value(&policy).map_err(|e| AppError::Internal(e.to_string()))?;
+    if let Some(k) = new_key {
+        v["api_key"] = serde_json::Value::String(k);
+        v["api_key_warning"] = serde_json::Value::String("store this key; it is shown once".into());
+    }
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -658,7 +708,7 @@ pub async fn create_agent(
         ));
     }
     // Atomic: INSERT OR IGNORE returns 0 if already exists — no separate existence check (avoids TOCTOU).
-    let inserted = state
+    let (inserted, new_key) = state
         .db
         .try_create_agent(
             id,
@@ -676,7 +726,36 @@ pub async fn create_agent(
         .get_agent_policy(id)
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::Internal("just inserted agent not found".into()))?;
-    Ok(Json(json!(policy)))
+    let mut v = serde_json::to_value(&policy).map_err(|e| AppError::Internal(e.to_string()))?;
+    // C1: return per-agent key once. Admin must distribute it to the agent.
+    if let Some(k) = new_key {
+        v["api_key"] = serde_json::Value::String(k);
+        v["api_key_warning"] = serde_json::Value::String("store this key; it is shown once".into());
+    }
+    Ok(Json(v))
+}
+
+/// C1: rotate an agent's key (master-gated). Returns new plaintext once.
+pub async fn rotate_agent_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("agent_id required".into()));
+    }
+    let key = state
+        .db
+        .rotate_agent_key(trimmed)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    match key {
+        Some(k) => Ok(Json(json!({
+            "agent_id": trimmed,
+            "api_key": k,
+            "warning": "store this key; it is shown once",
+        }))),
+        None => Err(AppError::NotFound(format!("agent {trimmed} not found"))),
+    }
 }
 
 pub async fn dashboard() -> impl IntoResponse {
@@ -685,14 +764,15 @@ pub async fn dashboard() -> impl IntoResponse {
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
-    let protected = Router::new()
-        .route("/v1/mandates", post(issue))
-        .route("/v1/checkout", post(checkout))
+    // C1: agent-key routes do their own per-agent verification inside handlers
+    // (they need the body agent_id), so they are NOT behind the master middleware.
+    let master_protected = Router::new()
         .route("/v1/agents", post(create_agent))
         .route(
             "/v1/agents/{id}",
             get(get_agent).patch(update_agent).delete(delete_agent),
         )
+        .route("/v1/agents/{id}/rotate", post(rotate_agent_key))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -702,6 +782,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/health", get(health))
+        .route("/v1/mandates", post(issue))
+        .route("/v1/checkout", post(checkout))
         .route("/v1/decisions", get(list_decisions))
         .route("/v1/decisions/{id}", get(get_decision))
         .route("/v1/decisions/{id}/verify", get(verify_decision))
@@ -710,6 +792,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/stats", get(ledger_stats))
         .route("/v1/metrics", get(ledger_stats))
         .route("/v1/agents", get(list_agents))
-        .merge(protected)
+        .merge(master_protected)
         .with_state(state)
 }

@@ -48,7 +48,30 @@ async fn fresh_clone_no_env_still_builds_and_tests() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // mandates should work with the in-memory, no-env app
+    // C1: create the agent with the master key, then mint with its per-agent key.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents")
+                .header("content-type", "application/json")
+                .header("x-api-key", &api_key)
+                .body(Body::from(json!({"agent_id": "fresh-agent"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let agent_key = body["api_key"].as_str().unwrap().to_string();
+
+    // mandates should work with the in-memory, no-env app via the agent key
     let resp = app
         .clone()
         .oneshot(
@@ -56,7 +79,7 @@ async fn fresh_clone_no_env_still_builds_and_tests() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &api_key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": "fresh-agent",

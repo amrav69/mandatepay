@@ -39,22 +39,61 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn gov_headers() -> reqwest::header::HeaderMap {
+fn master_key() -> String {
+    std::env::var("MANDATEPAY_API_KEY")
+        .map(|k| k.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn agent_headers(agent_key: &str) -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
-    if let Ok(k) = std::env::var("MANDATEPAY_API_KEY")
-        && !k.trim().is_empty()
-    {
-        h.insert(
-            "X-API-Key",
-            reqwest::header::HeaderValue::from_str(k.trim()).unwrap(),
-        );
+    if !agent_key.trim().is_empty() {
+        match reqwest::header::HeaderValue::from_str(agent_key.trim()) {
+            Ok(v) => {
+                h.insert("X-API-Key", v);
+            }
+            Err(e) => eprintln!("eval: invalid agent key for header: {e}"),
+        }
     }
     h
+}
+
+/// C1: master -> per-agent key for eval-attacker.
+async fn ensure_agent_key(
+    http: &reqwest::Client,
+    server: &str,
+    master: &str,
+    agent_id: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let resp: Value = http
+        .post(format!("{server}/v1/agents"))
+        .header("X-API-Key", master)
+        .json(&json!({"agent_id": agent_id}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    if let Some(k) = resp["api_key"].as_str() {
+        return Ok(k.to_string());
+    }
+    let resp: Value = http
+        .post(format!("{server}/v1/agents/{agent_id}/rotate"))
+        .header("X-API-Key", master)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    resp["api_key"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "rotate did not return api_key".into())
 }
 
 async fn checkout(
     http: &reqwest::Client,
     server: &str,
+    agent_key: &str,
     mandate: &Value,
     signature: &str,
     amount_minor: u64,
@@ -62,7 +101,7 @@ async fn checkout(
     let start = Instant::now();
     let resp = http
         .post(format!("{server}/v1/checkout"))
-        .headers(gov_headers())
+        .headers(agent_headers(agent_key))
         .json(&json!({
             "mandate": mandate,
             "signature": signature,
@@ -75,10 +114,10 @@ async fn checkout(
     (start.elapsed().as_millis(), body)
 }
 
-async fn issue_via_api(http: &reqwest::Client, server: &str) -> (Value, String) {
+async fn issue_via_api(http: &reqwest::Client, server: &str, agent_key: &str) -> (Value, String) {
     let resp: Value = http
         .post(format!("{server}/v1/mandates"))
-        .headers(gov_headers())
+        .headers(agent_headers(agent_key))
         .json(&json!({
             "agent_id": "eval-attacker",
             "merchant_id": "merchant-001",
@@ -149,18 +188,25 @@ async fn main() {
 
     let http = reqwest::Client::new();
 
+    // C1: eval-attacker per-agent key for all issue/checkout calls.
+    let master = master_key();
+    let agent_key = ensure_agent_key(&http, &server, &master, "eval-attacker")
+        .await
+        .expect("could not obtain eval-attacker agent key (is MANDATEPAY_API_KEY master set?)");
+
     println!("======================================================================");
     println!(" MANDATEPAY ATTACK SUITE — every vector must end in REJECT");
     println!("======================================================================");
 
     let (issue_ms, issued) = {
         let start = Instant::now();
-        let r = issue_via_api(&http, &server).await;
+        let r = issue_via_api(&http, &server, &agent_key).await;
         (start.elapsed().as_millis(), r)
     };
     println!(" control: API issued a legitimate mandate in {issue_ms} ms");
 
-    let (control_ms, control_body) = checkout(&http, &server, &issued.0, &issued.1, 29_900).await;
+    let (control_ms, control_body) =
+        checkout(&http, &server, &agent_key, &issued.0, &issued.1, 29_900).await;
     let control_allowed = decision_of(&control_body) == "ALLOW";
     println!(
         " control: legitimate checkout {} ms -> {} (must be ALLOW)",
@@ -171,7 +217,7 @@ async fn main() {
 
     let mut results = Vec::new();
 
-    let (mandate, _sig) = issue_via_api(&http, &server).await;
+    let (mandate, _sig) = issue_via_api(&http, &server, &agent_key).await;
     let forged_sig = {
         let mut raw = [0u8; 64];
         getrandom::fill(&mut raw).expect("os randomness unavailable");
@@ -181,51 +227,52 @@ async fn main() {
         run_attack(
             "forged_signature",
             "random 64B signature on valid mandate",
-            checkout(&http, &server, &mandate, &forged_sig, 29_900),
+            checkout(&http, &server, &agent_key, &mandate, &forged_sig, 29_900),
         )
         .await,
     );
 
-    let (mandate, sig) = issue_via_api(&http, &server).await;
+    let (mandate, sig) = issue_via_api(&http, &server, &agent_key).await;
     let mut inflated = mandate.clone();
     inflated["max_amount_minor"] = json!(4_990_000);
     results.push(
         run_attack(
             "tampered_mandate_field",
             "cap raised after signing, original sig kept",
-            checkout(&http, &server, &inflated, &sig, 29_900),
+            checkout(&http, &server, &agent_key, &inflated, &sig, 29_900),
         )
         .await,
     );
 
-    let (mandate, sig) = issue_via_api(&http, &server).await;
+    let (mandate, sig) = issue_via_api(&http, &server, &agent_key).await;
     results.push(
         run_attack(
             "over_cap_amount",
             "checkout amount 10x above signed cap",
-            checkout(&http, &server, &mandate, &sig, 499_000),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 499_000),
         )
         .await,
     );
 
-    let (mandate, sig) = issue_via_api(&http, &server).await;
+    let (mandate, sig) = issue_via_api(&http, &server, &agent_key).await;
     results.push(
         run_attack(
             "zero_amount",
             "checkout for 0 paise",
-            checkout(&http, &server, &mandate, &sig, 0),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 0),
         )
         .await,
     );
 
-    let (mandate, sig) = issue_via_api(&http, &server).await;
-    let (first_ms, first_body) = checkout(&http, &server, &mandate, &sig, 29_900).await;
+    let (mandate, sig) = issue_via_api(&http, &server, &agent_key).await;
+    let (first_ms, first_body) = checkout(&http, &server, &agent_key, &mandate, &sig, 29_900).await;
     println!(
         " replay setup: first spend {} ms -> {} (expected ALLOW)",
         first_ms,
         decision_of(&first_body)
     );
-    let (replay_ms, replay_body) = checkout(&http, &server, &mandate, &sig, 29_900).await;
+    let (replay_ms, replay_body) =
+        checkout(&http, &server, &agent_key, &mandate, &sig, 29_900).await;
     let replay_decision = decision_of(&replay_body);
     let replay_reason = replay_body["reason"]
         .as_str()
@@ -264,7 +311,7 @@ async fn main() {
         run_attack(
             "expired_mandate",
             "validly signed but expired window",
-            checkout(&http, &server, &mandate, &sig, 29_900),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 29_900),
         )
         .await,
     );
@@ -282,7 +329,7 @@ async fn main() {
         run_attack(
             "non_allowlisted_merchant",
             "validly signed mandate for unknown merchant",
-            checkout(&http, &server, &mandate, &sig, 29_900),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 29_900),
         )
         .await,
     );
@@ -292,7 +339,7 @@ async fn main() {
         run_attack(
             "out_of_scope_action",
             "signed action=payout outside governor scope",
-            checkout(&http, &server, &mandate, &sig, 29_900),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 29_900),
         )
         .await,
     );
@@ -310,17 +357,24 @@ async fn main() {
         run_attack(
             "unsupported_version",
             "signed future mandate version",
-            checkout(&http, &server, &mandate, &sig, 29_900),
+            checkout(&http, &server, &agent_key, &mandate, &sig, 29_900),
         )
         .await,
     );
 
-    let (mandate, _) = issue_via_api(&http, &server).await;
+    let (mandate, _) = issue_via_api(&http, &server, &agent_key).await;
     results.push(
         run_attack(
             "malformed_signature",
             "signature field is not valid base64",
-            checkout(&http, &server, &mandate, "%%%not base64!!!", 29_900),
+            checkout(
+                &http,
+                &server,
+                &agent_key,
+                &mandate,
+                "%%%not base64!!!",
+                29_900,
+            ),
         )
         .await,
     );

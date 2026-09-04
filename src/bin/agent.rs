@@ -62,6 +62,42 @@ fn fallback_proposal(budget: u64) -> Proposal {
     }
 }
 
+/// C1: exchange the master key for this agent's per-agent key (created once,
+/// rotated on subsequent runs since plaintext is shown only at creation).
+async fn ensure_agent_key(
+    http: &reqwest::Client,
+    server: &str,
+    master: &str,
+    agent_id: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if master.is_empty() {
+        return Err("MANDATEPAY_API_KEY (master) is required to obtain the per-agent key".into());
+    }
+    let resp: serde_json::Value = http
+        .post(format!("{server}/v1/agents"))
+        .header("X-API-Key", master)
+        .json(&json!({"agent_id": agent_id}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    if let Some(k) = resp["api_key"].as_str() {
+        return Ok(k.to_string());
+    }
+    let resp: serde_json::Value = http
+        .post(format!("{server}/v1/agents/{agent_id}/rotate"))
+        .header("X-API-Key", master)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    resp["api_key"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "rotate did not return api_key".into())
+}
+
 async fn ask_llm(
     http: &reqwest::Client,
     base_url: &str,
@@ -167,28 +203,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let mut req = http.post(format!("{server}/v1/mandates")).json(&json!({
-        "agent_id": agent_id,
-        "merchant_id": proposal.merchant_id,
-        "currency": "INR",
-        "max_amount_minor": budget,
-        "ttl_secs": 600
-    }));
-    if !gov_key.is_empty() {
-        req = req.header("X-API-Key", &gov_key);
-    }
-    let issued: IssuedResponse = req.send().await?.error_for_status()?.json().await?;
+    // C1: master -> per-agent key; mandates/checkout require the agent key.
+    let agent_key = ensure_agent_key(&http, &server, &gov_key, &agent_id).await?;
+    let issued: IssuedResponse = http
+        .post(format!("{server}/v1/mandates"))
+        .header("X-API-Key", &agent_key)
+        .json(&json!({
+            "agent_id": agent_id,
+            "merchant_id": proposal.merchant_id,
+            "currency": "INR",
+            "max_amount_minor": budget,
+            "ttl_secs": 600
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     println!("[agent] mandate issued: {}", issued.mandate["mandate_id"]);
 
-    let mut req = http.post(format!("{server}/v1/checkout")).json(&json!({
-        "mandate": issued.mandate,
-        "signature": issued.signature,
-        "amount_minor": proposal.amount_minor
-    }));
-    if !gov_key.is_empty() {
-        req = req.header("X-API-Key", &gov_key);
-    }
-    let decision: CheckoutResponse = req.send().await?.error_for_status()?.json().await?;
+    let decision: CheckoutResponse = http
+        .post(format!("{server}/v1/checkout"))
+        .header("X-API-Key", &agent_key)
+        .json(&json!({
+            "mandate": issued.mandate,
+            "signature": issued.signature,
+            "amount_minor": proposal.amount_minor
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     println!("[agent] decision: {}", decision.decision);
     println!("[agent] reason: {}", decision.reason);

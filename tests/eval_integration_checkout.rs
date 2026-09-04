@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use common::test_app;
+use common::{ensure_agent_key, test_app};
 use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
@@ -35,7 +35,8 @@ async fn checkout_rejects_without_api_key() {
 
 #[tokio::test]
 async fn verify_endpoint_validates_signature() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "agent-1").await;
     let resp = app
         .clone()
         .oneshot(
@@ -43,7 +44,7 @@ async fn verify_endpoint_validates_signature() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": "agent-1",
@@ -91,7 +92,8 @@ async fn verify_endpoint_validates_signature() {
 
 #[tokio::test]
 async fn chain_verify_true_after_writes() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "chain-test").await;
     for _ in 0..2 {
         let resp = app
             .clone()
@@ -100,7 +102,7 @@ async fn chain_verify_true_after_writes() {
                     .method("POST")
                     .uri("/v1/mandates")
                     .header("content-type", "application/json")
-                    .header("x-api-key", &key)
+                    .header("x-api-key", &agent_key)
                     .body(Body::from(
                         json!({
                             "agent_id": "chain-test",
@@ -139,14 +141,14 @@ async fn chain_verify_true_after_writes() {
 
 #[tokio::test]
 async fn delete_agent_removes_policy() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     let _ = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents/delete-me")
-                .header("x-api-key", &key)
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -158,7 +160,7 @@ async fn delete_agent_removes_policy() {
             Request::builder()
                 .method("DELETE")
                 .uri("/v1/agents/delete-me")
-                .header("x-api-key", &key)
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -177,7 +179,7 @@ async fn delete_agent_removes_policy() {
             Request::builder()
                 .method("DELETE")
                 .uri("/v1/agents/delete-me")
-                .header("x-api-key", &key)
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -188,7 +190,7 @@ async fn delete_agent_removes_policy() {
 
 #[tokio::test]
 async fn list_agents_search() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     for id in ["search-foo-1", "search-foo-2", "search-bar-1"] {
         let _ = app
             .clone()
@@ -196,7 +198,7 @@ async fn list_agents_search() {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/v1/agents/{id}"))
-                    .header("x-api-key", &key)
+                    .header("x-api-key", &master)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -232,7 +234,7 @@ async fn list_agents_search() {
 
 #[tokio::test]
 async fn list_agents_pagination() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     for id in ["pag-a", "pag-b", "pag-c"] {
         let _ = app
             .clone()
@@ -240,7 +242,7 @@ async fn list_agents_pagination() {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/v1/agents/{id}"))
-                    .header("x-api-key", &key)
+                    .header("x-api-key", &master)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -307,7 +309,7 @@ async fn get_agent_requires_auth() {
 
 #[tokio::test]
 async fn list_agents_sort() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     for (id, cap) in [("sort-a", 1000), ("sort-b", 3000), ("sort-c", 2000)] {
         let _ = app
             .clone()
@@ -316,7 +318,7 @@ async fn list_agents_sort() {
                     .method("POST")
                     .uri("/v1/agents")
                     .header("content-type", "application/json")
-                    .header("x-api-key", &key)
+                    .header("x-api-key", &master)
                     .body(Body::from(
                         json!({"agent_id": id, "max_cap": cap}).to_string(),
                     ))
@@ -354,7 +356,8 @@ async fn list_agents_sort() {
 
 #[tokio::test]
 async fn forged_merchant_does_not_leak_allowlist() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "oracle-agent").await;
     let resp = app
         .clone()
         .oneshot(
@@ -362,7 +365,7 @@ async fn forged_merchant_does_not_leak_allowlist() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": "oracle-agent",
@@ -393,7 +396,7 @@ async fn forged_merchant_does_not_leak_allowlist() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "mandate": mandate,
@@ -419,7 +422,8 @@ async fn forged_merchant_does_not_leak_allowlist() {
 
 #[tokio::test]
 async fn retry_same_nonce_returns_cached_order_not_replay_error() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "retry-agent").await;
     let resp = app
         .clone()
         .oneshot(
@@ -427,7 +431,7 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": "retry-agent",
@@ -463,7 +467,7 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
         )
@@ -484,7 +488,7 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
         )
@@ -509,7 +513,7 @@ async fn retry_same_nonce_returns_cached_order_not_replay_error() {
 
 #[tokio::test]
 async fn agent_cap_below_mandate_cap_rejects_checkout() {
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     let agent_id = "cap-test-agent";
     let _ = app
         .clone()
@@ -518,12 +522,14 @@ async fn agent_cap_below_mandate_cap_rejects_checkout() {
                 .method("PATCH")
                 .uri(format!("/v1/agents/{agent_id}"))
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &master)
                 .body(Body::from(json!({"max_cap": 1000}).to_string()))
                 .unwrap(),
         )
         .await
         .unwrap();
+    // C1: PATCH is master-gated; mandates/checkout need the per-agent key.
+    let agent_key = ensure_agent_key(&app, &master, agent_id).await;
     let resp = app
         .clone()
         .oneshot(
@@ -531,7 +537,7 @@ async fn agent_cap_below_mandate_cap_rejects_checkout() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": agent_id,
@@ -561,7 +567,7 @@ async fn agent_cap_below_mandate_cap_rejects_checkout() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "mandate": mandate,
@@ -596,7 +602,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
     // and for the weak DB-only test at tests/mandates_tests.rs:192.
     // This is an end-to-end test through axum Router, not just Db, so it would
     // fail if the rollback call in app.rs were deleted.
-    let (app, key) = test_app();
+    let (app, master) = test_app();
     let agent_id = "vel-e2e-rollback-test";
 
     // Set velocity_limit = 1 for this agent so the second checkout hits the limit
@@ -607,7 +613,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("PATCH")
                 .uri(format!("/v1/agents/{agent_id}"))
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &master)
                 .body(Body::from(
                     json!({ "velocity_limit": 1, "velocity_window_secs": 60 }).to_string(),
                 ))
@@ -616,6 +622,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let agent_key = ensure_agent_key(&app, &master, agent_id).await;
 
     // First mandate + checkout should be ALLOW (consumes 1 velocity token)
     let resp = app
@@ -625,7 +632,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": agent_id,
@@ -657,7 +664,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({ "mandate": mandate1, "signature": sig1, "amount_minor": 1000 })
                         .to_string(),
@@ -683,7 +690,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": agent_id,
@@ -715,7 +722,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({ "mandate": mandate2, "signature": sig2, "amount_minor": 1000 })
                         .to_string(),
@@ -750,7 +757,7 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({ "mandate": mandate2, "signature": sig2, "amount_minor": 1000 })
                         .to_string(),
@@ -782,7 +789,8 @@ async fn velocity_reject_rolls_back_nonce_so_retry_not_replay() {
 async fn idempotency_cache_amount_mismatch_not_returned() {
     // Regression for src/app.rs:235-253 — early cache must also verify amount matches cached order.
     // Same mandate_id with two different valid amounts: second checkout must NOT silently return the first cached order.
-    let (app, key) = test_app();
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "idempotent-amount-test").await;
 
     let resp = app
         .clone()
@@ -791,7 +799,7 @@ async fn idempotency_cache_amount_mismatch_not_returned() {
                 .method("POST")
                 .uri("/v1/mandates")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({
                         "agent_id": "idempotent-amount-test",
@@ -824,7 +832,7 @@ async fn idempotency_cache_amount_mismatch_not_returned() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({ "mandate": mandate, "signature": sig, "amount_minor": 1000 })
                         .to_string(),
@@ -853,7 +861,7 @@ async fn idempotency_cache_amount_mismatch_not_returned() {
                 .method("POST")
                 .uri("/v1/checkout")
                 .header("content-type", "application/json")
-                .header("x-api-key", &key)
+                .header("x-api-key", &agent_key)
                 .body(Body::from(
                     json!({ "mandate": mandate, "signature": sig, "amount_minor": 2000 })
                         .to_string(),

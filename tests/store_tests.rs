@@ -4,7 +4,7 @@ use mandatepay::store::Db;
 fn agent_crud_and_velocity() {
     let db = Db::open(":memory:").unwrap();
 
-    let p1 = db.get_or_create_agent("test-agent").unwrap();
+    let (p1, _k1) = db.get_or_create_agent("test-agent").unwrap();
     assert_eq!(p1.agent_id, "test-agent");
     assert_eq!(p1.max_cap, 50000);
     assert_eq!(p1.velocity_limit, 50);
@@ -220,6 +220,7 @@ fn app_605_create_agent_just_inserted_not_panics() {
     let db = Db::open(":memory:").unwrap();
     assert!(
         db.try_create_agent("new-agent", Some(12345), None, None, None)
+            .map(|(b, _)| b)
             .unwrap()
     );
     let policy = db

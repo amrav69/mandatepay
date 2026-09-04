@@ -4,17 +4,54 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn gov_headers() -> reqwest::header::HeaderMap {
+fn master_key() -> String {
+    std::env::var("MANDATEPAY_API_KEY")
+        .map(|k| k.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn agent_headers(agent_key: &str) -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
-    if let Ok(k) = std::env::var("MANDATEPAY_API_KEY")
-        && !k.trim().is_empty()
-    {
-        h.insert(
-            "X-API-Key",
-            reqwest::header::HeaderValue::from_str(k.trim()).unwrap(),
-        );
+    if !agent_key.trim().is_empty() {
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(agent_key.trim()) {
+            h.insert("X-API-Key", v);
+        } else {
+            eprintln!("chaos: agent key contains invalid header chars, sending unauthenticated");
+        }
     }
     h
+}
+
+/// C1: master -> per-agent key for chaos-agent.
+async fn ensure_agent_key(
+    http: &reqwest::Client,
+    server: &str,
+    master: &str,
+    agent_id: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let resp: Value = http
+        .post(format!("{server}/v1/agents"))
+        .header("X-API-Key", master)
+        .json(&json!({"agent_id": agent_id}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    if let Some(k) = resp["api_key"].as_str() {
+        return Ok(k.to_string());
+    }
+    let resp: Value = http
+        .post(format!("{server}/v1/agents/{agent_id}/rotate"))
+        .header("X-API-Key", master)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    resp["api_key"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "rotate did not return api_key".into())
 }
 
 #[tokio::main]
@@ -22,6 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     let server = env_or("MANDATEPAY_URL", "http://127.0.0.1:8080");
     let http = reqwest::Client::new();
+    let master = master_key();
+    let agent_key = ensure_agent_key(&http, &server, &master, "chaos-agent").await?;
 
     println!("======================================================================");
     println!(" MANDATEPAY CHAOS — 10 concurrent checkouts on the SAME mandate");
@@ -32,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let issued: Value = http
         .post(format!("{server}/v1/mandates"))
-        .headers(gov_headers())
+        .headers(agent_headers(&agent_key))
         .json(&json!({
             "agent_id": "chaos-agent",
             "merchant_id": "merchant-001",
@@ -55,10 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let s = server.clone();
         let m = mandate.clone();
         let sig_c = sig.clone();
+        let ak = agent_key.clone();
         handles.push(tokio::spawn(async move {
             let resp: Value = h
                 .post(format!("{s}/v1/checkout"))
-                .headers(gov_headers())
+                .headers(agent_headers(&ak))
                 .json(&json!({
                     "mandate": m,
                     "signature": sig_c,
