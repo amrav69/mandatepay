@@ -18,13 +18,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly the same three plus:
+CI (`.github/workflows/ci.yml`, SHA-pinned actions, `permissions`, `timeout-minutes`) runs exactly the same three plus:
 
 ```bash
 cargo install cargo-tarpaulin --locked
-cargo tarpaulin --out Xml --fail-under 0   # will be raised to 60 as coverage grows
+cargo tarpaulin --out Xml --fail-under 60
 cargo audit
-# then boots the server and runs the live attack suite + chaos + chain verify
+cargo deny check advisories   # informational (continue-on-error), see deny.toml
+# then pre-builds bins, boots the server (fail-fast health wait) and runs the live attack suite + chaos + chain verify
 ```
 
 If any of the above fails locally, it will fail in CI.
@@ -39,8 +40,8 @@ cargo run --bin eval              # 10-vector attack suite
 cargo run --bin chaos             # 10 concurrent checkouts on same mandate
 ```
 
-`cargo test` is fully offline — no `.env`, no network, no Docker. Tests that need live infrastructure are `#[ignore]`.
+`cargo test` is fully offline — no `.env`, no network, no Docker. Live infrastructure is exercised by the `eval`/`chaos` binaries in CI, not by `#[ignore]` tests (there are none).
 
 ## History
 
-We value sustained, incremental history over a single burst. Land real changes over days, and commit under your own identity so the log shows more than one human author.
+We value sustained, incremental history over a single burst. Land real changes over days, and commit under your own identity.
