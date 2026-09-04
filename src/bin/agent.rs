@@ -53,11 +53,19 @@ fn extract_json(text: &str) -> Option<&str> {
     }
 }
 
+/// H10: the mandate cap is always the agreed proposal amount, never the wallet
+/// budget. Isolated so the least-privilege rule is unit-testable.
+fn mandate_cap_for(proposal: &Proposal) -> u64 {
+    proposal.amount_minor
+}
+
 fn fallback_proposal(budget: u64) -> Proposal {
+    // Saturating math: operator-set budgets near u64::MAX must not wrap.
+    let amount = budget.saturating_mul(3).saturating_div(5);
     Proposal {
         item: "wired earphones (deterministic fallback, no LLM key configured)".into(),
         merchant_id: "merchant-001".into(),
-        amount_minor: budget * 3 / 5,
+        amount_minor: amount,
         reasoning: "LLM_API_KEY not set; deterministic mid-budget proposal used to exercise the mandate loop".into(),
     }
 }
@@ -204,6 +212,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // C1: master -> per-agent key; mandates/checkout require the agent key.
+    // H10: least-privilege mandate — cap is the agreed proposal amount, not the
+    // full wallet budget, so a stolen mandate authorizes only this purchase.
     let agent_key = ensure_agent_key(&http, &server, &gov_key, &agent_id).await?;
     let issued: IssuedResponse = http
         .post(format!("{server}/v1/mandates"))
@@ -212,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "agent_id": agent_id,
             "merchant_id": proposal.merchant_id,
             "currency": "INR",
-            "max_amount_minor": budget,
+            "max_amount_minor": mandate_cap_for(&proposal),
             "ttl_secs": 600
         }))
         .send()
@@ -250,5 +260,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         eprintln!("[agent] purchase rejected; reporting honestly, not retrying");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mandate_cap_is_proposal_not_budget() {
+        // H10 regression: cap must equal the proposal even when budget is larger.
+        let p = Proposal {
+            item: "x".into(),
+            merchant_id: "merchant-001".into(),
+            amount_minor: 10000,
+            reasoning: "r".into(),
+        };
+        assert_eq!(mandate_cap_for(&p), 10000);
+        let f = fallback_proposal(50000);
+        assert!(f.amount_minor <= 50000);
+        assert_eq!(mandate_cap_for(&f), f.amount_minor);
     }
 }
