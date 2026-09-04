@@ -106,10 +106,14 @@ impl Gateway {
                         "gateway": "mandatepay"
                     }
                 });
+                // H12: at-most-once relies on the local DB PENDING reservation, NOT on
+                // this header. Razorpay /v1/orders has no documented Idempotency-Key
+                // support; `receipt` carries the mandate_id for operator correlation.
+                // The header below is tracing-only.
                 let resp = http
                     .post("https://api.razorpay.com/v1/orders")
                     .basic_auth(key_id, Some(key_secret))
-                    .header("Idempotency-Key", &mandate.mandate_id)
+                    .header("X-Mandate-Id", &mandate.mandate_id)
                     .json(&payload)
                     .send()
                     .await
