@@ -140,6 +140,14 @@ pub async fn issue(
     require_agent_key(&state.db, &headers, &req.agent_id)?;
     req.validate()
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // H4: length validator runs on the raw string, so whitespace-only ids pass
+    // it and trim to empty. Reject after trimming to avoid issuing mandates
+    // that can never be spent.
+    if req.agent_id.trim().is_empty() || req.merchant_id.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "agent_id and merchant_id are required".into(),
+        ));
+    }
     if req.currency != "INR" {
         return Err(AppError::BadRequest(
             "only INR mandates are supported".into(),

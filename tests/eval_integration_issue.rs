@@ -123,6 +123,35 @@ async fn issue_rejects_invalid_ttl_and_currency() {
 }
 
 #[tokio::test]
+async fn issue_rejects_whitespace_ids_after_trim() {
+    // H4 regression: whitespace-only ids pass length(min=1) but trim to empty.
+    let (app, master) = test_app();
+    let agent_key = ensure_agent_key(&app, &master, "ws-agent").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mandates")
+                .header("content-type", "application/json")
+                .header("x-api-key", &agent_key)
+                .body(Body::from(
+                    json!({
+                        "agent_id": "ws-agent",
+                        "merchant_id": "   ",
+                        "currency": "INR",
+                        "max_amount_minor": 1000,
+                        "ttl_secs": 600
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn master_key_cannot_issue_or_checkout() {
     // C1 regression: master/admin key authorizes /v1/agents* only.
     let (app, master) = test_app();
