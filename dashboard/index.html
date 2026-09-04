@@ -299,8 +299,8 @@ async function refreshOnce(){
       fetchJSON('/v1/decisions?limit='+currentLimit),
       fetchJSON('/v1/stats'),
       fetchJSON('/v1/chain/verify').catch(()=>({chain_valid:false})),
-      fetchJSON('/v1/agents?' + qPart + sortPart + 'limit=100').catch(()=>({agents:[]})),
-      fetchJSON('/health').catch(()=>({gateway:"mock"}))
+      fetchJSON('/v1/agents?' + qPart + sortPart + 'limit=12').catch(()=>({agents:[]})),
+      fetchJSON('/health').catch(()=>({gateway:"unreachable"}))
     ]);
     const rows=dRes.decisions||[];
     cachedRows=rows;
@@ -308,7 +308,8 @@ async function refreshOnce(){
     document.getElementById('sAllow').textContent=sRes.allow??0;
     document.getElementById('sReject').textContent=sRes.reject??0;
     document.getElementById('sIssued').textContent=sRes.issued??0;
-    document.getElementById('gatewayPill').textContent = hRes.gateway === "razorpay-test" ? "gateway: razorpay-test · live" : "gateway: mock";
+    // Distinguish offline from mock mode (was: offline incorrectly shown as mock).
+    document.getElementById('gatewayPill').textContent = hRes.gateway === "razorpay-test" ? "gateway: razorpay-test · live" : (hRes.gateway === "unreachable" ? "gateway: unreachable" : "gateway: mock");
     const chainEl=document.getElementById('chainPill');
     chainEl.textContent = cRes.chain_valid ? "chain: valid ✓" : "chain: —";
     chainEl.style.color = cRes.chain_valid ? "#a7f3ce" : "#c2d0e6";
@@ -338,12 +339,21 @@ async function refreshOnce(){
   });
 })();
 function getApiKey(){
-  let k=localStorage.getItem('MANDATEPAY_API_KEY')||'';
+  // sessionStorage (tab-scoped) instead of localStorage (persistent): any XSS
+  // can still steal it during the session, but it no longer survives on disk.
+  // MP_API_BASE above intentionally stays in localStorage (not sensitive).
+  // One-time migration for existing demo users:
+  try{
+    const legacy = localStorage.getItem('MANDATEPAY_API_KEY');
+    if(legacy){ sessionStorage.setItem('MANDATEPAY_API_KEY', legacy.trim()); localStorage.removeItem('MANDATEPAY_API_KEY'); }
+  }catch{}
+  let k='';
+  try{ k=sessionStorage.getItem('MANDATEPAY_API_KEY')||''; }catch{ k=''; }
   if(!k){
-    k=prompt('Enter MANDATEPAY_API_KEY to edit agents (found in .env, or ask for the test key):')||'';
-    if(k) localStorage.setItem('MANDATEPAY_API_KEY', k.trim());
+    k=prompt('Enter MANDATEPAY_API_KEY (master) to edit agents:')||'';
+    if(k) try{ sessionStorage.setItem('MANDATEPAY_API_KEY', k.trim()); }catch{}
   }
-  return (localStorage.getItem('MANDATEPAY_API_KEY')||'').trim();
+  try{ return (sessionStorage.getItem('MANDATEPAY_API_KEY')||'').trim(); }catch{ return ''; }
 }
 function renderAgents(agents){
   const el=document.getElementById('agentsTable');
@@ -441,7 +451,7 @@ function renderAgents(agents){
   clearLink.href="#";
   clearLink.style.color="#8ea0bb";
   clearLink.textContent="clear key";
-  clearLink.addEventListener('click', (e)=>{ e.preventDefault(); localStorage.removeItem('MANDATEPAY_API_KEY'); alert('API key cleared'); });
+  clearLink.addEventListener('click', (e)=>{ e.preventDefault(); try{ sessionStorage.removeItem('MANDATEPAY_API_KEY'); localStorage.removeItem('MANDATEPAY_API_KEY'); }catch{} alert('API key cleared'); });
   tip.appendChild(clearLink);
   el.appendChild(tip);
 }
