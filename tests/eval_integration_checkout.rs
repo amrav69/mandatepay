@@ -211,6 +211,7 @@ async fn list_agents_search() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?q=foo")
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -255,6 +256,7 @@ async fn list_agents_pagination() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?limit=1&offset=0")
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -273,6 +275,7 @@ async fn list_agents_pagination() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?limit=1&offset=1")
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -308,6 +311,23 @@ async fn get_agent_requires_auth() {
 }
 
 #[tokio::test]
+async fn list_agents_requires_auth() {
+    // C2 regression: list must be at least as protected as single-agent reads.
+    let (app, _) = test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn list_agents_sort() {
     let (app, master) = test_app();
     for (id, cap) in [("sort-a", 1000), ("sort-b", 3000), ("sort-c", 2000)] {
@@ -333,6 +353,7 @@ async fn list_agents_sort() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?sort=max_cap&order=desc")
+                .header("x-api-key", &master)
                 .body(Body::empty())
                 .unwrap(),
         )

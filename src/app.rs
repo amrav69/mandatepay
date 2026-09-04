@@ -766,8 +766,9 @@ pub async fn dashboard() -> impl IntoResponse {
 pub fn build_router(state: Arc<AppState>) -> Router {
     // C1: agent-key routes do their own per-agent verification inside handlers
     // (they need the body agent_id), so they are NOT behind the master middleware.
+    // C2: agent list requires the master key, matching single-agent reads.
     let master_protected = Router::new()
-        .route("/v1/agents", post(create_agent))
+        .route("/v1/agents", post(create_agent).get(list_agents))
         .route(
             "/v1/agents/{id}",
             get(get_agent).patch(update_agent).delete(delete_agent),
@@ -791,7 +792,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/chain/verify", get(chain_verify))
         .route("/v1/stats", get(ledger_stats))
         .route("/v1/metrics", get(ledger_stats))
-        .route("/v1/agents", get(list_agents))
         .merge(master_protected)
         .with_state(state)
 }
