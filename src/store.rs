@@ -886,6 +886,10 @@ impl Db {
         rows.collect()
     }
 
+    /// Deleting an agent removes its policy + velocity window but intentionally
+    /// retains decisions/nonces/orders as an immutable audit trail. A recreated agent
+    /// with the same id inherits old nonce/order blocks (replay-safe) but gets a fresh
+    /// velocity window and must rotate to obtain a new key.
     pub fn delete_agent(&self, agent_id: &str) -> rusqlite::Result<bool> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute("DELETE FROM agents WHERE agent_id = ?1", params![agent_id])?;
