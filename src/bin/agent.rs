@@ -156,7 +156,13 @@ async fn ask_llm(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
+    // M37: surface malformed .env files instead of silently ignoring them.
+    if let Err(e) = dotenvy::dotenv() {
+        let msg = e.to_string();
+        if !msg.contains("not found") && !msg.contains("No such") {
+            eprintln!("agent .env warning: {e}");
+        }
+    }
 
     let server = env_or("MANDATEPAY_URL", "http://127.0.0.1:8080");
     let base_url = env_or("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1");

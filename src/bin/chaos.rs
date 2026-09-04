@@ -56,7 +56,13 @@ async fn ensure_agent_key(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
+    // M37: surface malformed .env files instead of silently ignoring them.
+    if let Err(e) = dotenvy::dotenv() {
+        let msg = e.to_string();
+        if !msg.contains("not found") && !msg.contains("No such") {
+            eprintln!("chaos .env warning: {e}");
+        }
+    }
     let server = env_or("MANDATEPAY_URL", "http://127.0.0.1:8080");
     let http = reqwest::Client::new();
     let master = master_key();

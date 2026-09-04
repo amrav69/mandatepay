@@ -10,7 +10,14 @@ use mandatepay::{
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
+    // M37: malformed .env files were silently swallowed; surface parse errors.
+    // A missing file is fine (fresh clone / Docker), a malformed one is not.
+    if let Err(e) = dotenvy::dotenv() {
+        let msg = e.to_string();
+        if !msg.contains("not found") && !msg.contains("No such") {
+            eprintln!(".env parse warning: {e}");
+        }
+    }
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(

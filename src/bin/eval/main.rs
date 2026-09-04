@@ -164,7 +164,13 @@ async fn run_attack(
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
+    // M37: surface malformed .env files instead of silently ignoring them.
+    if let Err(e) = dotenvy::dotenv() {
+        let msg = e.to_string();
+        if !msg.contains("not found") && !msg.contains("No such") {
+            eprintln!("eval .env warning: {e}");
+        }
+    }
 
     let server = env_or("MANDATEPAY_URL", "http://127.0.0.1:8080");
     let seed = std::env::var("MANDATEPAY_SEED").unwrap_or_default();
