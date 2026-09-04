@@ -1,4 +1,5 @@
-edition = "2021"
+# Matches Cargo.toml edition so let-chains and other 2024 syntax format correctly.
+edition = "2024"
 max_width = 100
 tab_spaces = 4
 hard_tabs = false
