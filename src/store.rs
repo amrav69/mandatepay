@@ -367,25 +367,31 @@ impl Db {
     }
 
     pub fn verify_chain(&self) -> rusqlite::Result<bool> {
-        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(DecisionRow {
-                id: row.get(0)?,
-                ts: row.get(1)?,
-                endpoint: row.get(2)?,
-                decision: row.get(3)?,
-                reason: row.get(4)?,
-                payload: row.get(5)?,
-                audit_hash: row.get(6)?,
-                prev_hash: row.get(7)?,
-            })
-        })?;
+        // M10: snapshot rows under the lock, then hash outside it so writers
+        // are not blocked for the whole walk. A concurrent write may land
+        // after the snapshot (verified on next call) but can never corrupt
+        // this verification pass.
+        let snapshot: Vec<DecisionRow> = {
+            let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stmt = conn.prepare(
+                "SELECT id, ts, endpoint, decision, reason, payload, audit_hash, prev_hash FROM decisions ORDER BY id ASC",
+            )?;
+            stmt.query_map([], |row| {
+                Ok(DecisionRow {
+                    id: row.get(0)?,
+                    ts: row.get(1)?,
+                    endpoint: row.get(2)?,
+                    decision: row.get(3)?,
+                    reason: row.get(4)?,
+                    payload: row.get(5)?,
+                    audit_hash: row.get(6)?,
+                    prev_hash: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
         let mut expected_prev = String::new();
-        for row in rows {
-            let r = row?;
+        for r in &snapshot {
             if r.prev_hash != expected_prev {
                 return Ok(false);
             }
@@ -405,7 +411,7 @@ impl Db {
             if calc != r.audit_hash {
                 return Ok(false);
             }
-            expected_prev = r.audit_hash;
+            expected_prev = r.audit_hash.clone();
         }
         Ok(true)
     }
