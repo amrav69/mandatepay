@@ -22,7 +22,13 @@ async fn main() {
     tracing::info!(authority_key = %authority.public_key_b64(), "authority public key");
 
     let gateway = Gateway::from_env();
-    let db = Db::open("mandatepay.db").expect("failed to open sqlite ledger");
+    let db = match Db::open("mandatepay.db") {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("failed to open sqlite ledger mandatepay.db: {e}");
+            std::process::exit(1);
+        }
+    };
     let api_key = resolve_api_key();
     let max_mandate_cap = parse_max_cap();
     tracing::info!(
@@ -41,10 +47,23 @@ async fn main() {
     let app = build_router(state);
 
     let host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let addr: SocketAddr = format!("{host}:8080").parse().expect("invalid BIND_HOST");
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("port 8080 already in use");
+    let addr: SocketAddr = match format!("{host}:8080").parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("invalid BIND_HOST '{host}': {e}");
+            std::process::exit(1);
+        }
+    };
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("failed to bind {addr} (port 8080 already in use?): {e}");
+            std::process::exit(1);
+        }
+    };
     tracing::info!(%addr, "listening");
-    axum::serve(listener, app).await.expect("server crashed");
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("server error: {e}");
+        std::process::exit(1);
+    }
 }
