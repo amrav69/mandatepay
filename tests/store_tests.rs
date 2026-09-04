@@ -251,6 +251,37 @@ fn h3_amount_as_i64_overflow_rejected_not_wrapped() {
 }
 
 #[test]
+fn c3_agent_u64_to_i64_rejected_not_wrapped() {
+    // C3 regression: max_cap / velocity_window_secs above i64::MAX must error
+    // at the store layer (HTTP layer re-checks), never wrap negative.
+    let db = Db::open(":memory:").unwrap();
+    let overflow = i64::MAX as u64 + 1;
+    assert!(
+        db.try_create_agent("c3-max", Some(overflow), None, None, None)
+            .is_err()
+    );
+    assert!(
+        db.try_create_agent("c3-win", None, None, Some(u64::MAX), None)
+            .is_err()
+    );
+    db.get_or_create_agent("c3-upd").unwrap();
+    assert!(
+        db.update_agent("c3-upd", Some(u64::MAX), None, None, None)
+            .is_err()
+    );
+    assert!(
+        db.update_agent("c3-upd", None, None, Some(overflow), None)
+            .is_err()
+    );
+    // In-range max still accepted.
+    assert!(
+        db.try_create_agent("c3-ok", Some(i64::MAX as u64), None, None, None)
+            .map(|(b, _)| b)
+            .unwrap()
+    );
+}
+
+#[test]
 fn m4_u32_and_u64_bounds_checked_no_wrap() {
     // M4: as u32 / as u64 on DB values that could be out of range must error, not wrap.
     // Insert a row with velocity_limit = u32::MAX as i64 + 1 (out of range) via raw SQL, then read via get_agent_policy

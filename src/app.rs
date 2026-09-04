@@ -641,6 +641,14 @@ pub async fn update_agent(
             "velocity_window_secs must be positive".into(),
         ));
     }
+    // C3: reject wrap-around values at the HTTP layer too (store re-checks).
+    if let Some(v) = req.velocity_window_secs
+        && v > i64::MAX as u64
+    {
+        return Err(AppError::BadRequest(
+            "velocity_window_secs exceeds i64::MAX".into(),
+        ));
+    }
     let policy = state
         .db
         .update_agent(
@@ -650,7 +658,14 @@ pub async fn update_agent(
             req.velocity_window_secs,
             req.allowed_merchants,
         )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            let s = e.to_string();
+            if s.contains("must be") || s.contains("exceeds") {
+                AppError::BadRequest(s)
+            } else {
+                AppError::Internal(s)
+            }
+        })?;
     Ok(Json(json!(policy)))
 }
 
@@ -707,6 +722,14 @@ pub async fn create_agent(
             "velocity_window_secs must be positive".into(),
         ));
     }
+    // C3: reject wrap-around values at the HTTP layer too (store re-checks).
+    if let Some(v) = req.velocity_window_secs
+        && v > i64::MAX as u64
+    {
+        return Err(AppError::BadRequest(
+            "velocity_window_secs exceeds i64::MAX".into(),
+        ));
+    }
     // Atomic: INSERT OR IGNORE returns 0 if already exists — no separate existence check (avoids TOCTOU).
     let (inserted, new_key) = state
         .db
@@ -717,7 +740,14 @@ pub async fn create_agent(
             req.velocity_window_secs,
             req.allowed_merchants,
         )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            let s = e.to_string();
+            if s.contains("must be") || s.contains("exceeds") {
+                AppError::BadRequest(s)
+            } else {
+                AppError::Internal(s)
+            }
+        })?;
     if !inserted {
         return Err(AppError::BadRequest(format!("agent {id} already exists")));
     }

@@ -52,6 +52,13 @@ fn checked_u64(v: i64, col: usize, field: &str) -> rusqlite::Result<u64> {
     Ok(v as u64)
 }
 
+/// C3: checked u64 -> i64 for DB writes. Rejects values that would wrap negative
+/// instead of silently storing them (stored DoS via `as i64` wrap).
+fn checked_i64(v: u64, field: &str) -> rusqlite::Result<i64> {
+    i64::try_from(v)
+        .map_err(|_| rusqlite::Error::InvalidParameterName(format!("{field} exceeds i64::MAX")))
+}
+
 /// C1: default allowlist for brand-new agents (per-agent value is authoritative after creation).
 pub const DEFAULT_ALLOWLIST_JSON: &str = r#"["merchant-001"]"#;
 
@@ -716,7 +723,7 @@ impl Db {
         if let Some(v) = max_cap {
             conn.execute(
                 "UPDATE agents SET max_cap = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![checked_i64(v, "max_cap")?, unix_now() as i64, agent_id],
             )?;
         }
         if let Some(v) = velocity_limit {
@@ -728,7 +735,11 @@ impl Db {
         if let Some(v) = velocity_window_secs {
             conn.execute(
                 "UPDATE agents SET velocity_window_secs = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![
+                    checked_i64(v, "velocity_window_secs")?,
+                    unix_now() as i64,
+                    agent_id
+                ],
             )?;
         }
         if let Some(v) = allowed_merchants {
@@ -774,9 +785,10 @@ impl Db {
         velocity_window_secs: Option<u64>,
         allowed_merchants: Option<Vec<String>>,
     ) -> rusqlite::Result<(bool, Option<String>)> {
-        let max_cap_val = max_cap.unwrap_or(50000) as i64;
+        let max_cap_val = checked_i64(max_cap.unwrap_or(50000), "max_cap")?;
         let velocity_limit_val = velocity_limit.unwrap_or(50) as i64;
-        let velocity_window_secs_val = velocity_window_secs.unwrap_or(60) as i64;
+        let velocity_window_secs_val =
+            checked_i64(velocity_window_secs.unwrap_or(60), "velocity_window_secs")?;
         let merchants = match allowed_merchants {
             Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
             None => DEFAULT_ALLOWLIST_JSON.to_string(),

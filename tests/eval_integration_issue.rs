@@ -241,6 +241,58 @@ async fn agent_key_for_wrong_agent_rejected() {
 }
 
 #[tokio::test]
+async fn oversized_caps_rejected_400_not_stored() {
+    // C3 regression: u64 values that would wrap on `as i64` must be 400,
+    // never stored (stored DoS) and never 500.
+    let (app, master) = test_app();
+    let overflow = i64::MAX as u64 + 1;
+    let bodies: Vec<serde_json::Value> = vec![
+        json!({"agent_id": "c3-max-u64", "max_cap": u64::MAX}),
+        json!({"agent_id": "c3-max-over", "max_cap": overflow}),
+        json!({"agent_id": "c3-win-u64", "velocity_window_secs": u64::MAX}),
+        json!({"agent_id": "c3-win-over", "velocity_window_secs": overflow}),
+    ];
+    for body in bodies {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/agents")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &master)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "oversized agent field must be 400, got {} for {body}",
+            resp.status()
+        );
+    }
+    // PATCH path as well.
+    let _ = ensure_agent_key(&app, &master, "c3-patch").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/agents/c3-patch")
+                .header("content-type", "application/json")
+                .header("x-api-key", &master)
+                .body(Body::from(
+                    json!({"velocity_window_secs": u64::MAX}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn get_agent_returns_policy() {
     let (app, master) = test_app();
     let resp = app
