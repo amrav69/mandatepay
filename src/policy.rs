@@ -12,13 +12,16 @@ fn reject(reason: impl Into<String>) -> Decision {
     }
 }
 
-pub fn evaluate(
+/// H11: side-effect-free validator shared by `evaluate` and the idempotency
+/// early-cache path, so the cache cannot drift from the policy. Covers every
+/// gate except the nonce claim (which has a DB side effect and stays in
+/// `evaluate`).
+pub fn validate_stateless(
     authority: &Authority,
     mandate: &Mandate,
     signature_b64: &str,
     amount_minor: u64,
     allowed_merchants: &[String],
-    db: &Db,
 ) -> Decision {
     if mandate.version != 1 {
         return reject("unsupported mandate version");
@@ -41,10 +44,8 @@ pub fn evaluate(
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
     }
-    // M2: reject mandates that are too far in the future (clock skew / replay)
-    // 60 seconds leeway allows for minor drift between agent and server clocks
-    // but rejects future-dated mandates that could be used to bypass expiry.
-    if mandate.issued_at > unix_now() + 60 {
+    // 60s leeway for clock skew; beyond that reject future-dated mandates.
+    if mandate.issued_at > unix_now().saturating_add(60) {
         return reject("issued_at is too far in the future");
     }
     if unix_now() >= mandate.expires_at {
@@ -69,6 +70,30 @@ pub fn evaluate(
             "amount {amount_minor} exceeds mandate cap {}",
             mandate.max_amount_minor
         ));
+    }
+
+    Decision::Allow {
+        reason: "stateless checks passed".into(),
+    }
+}
+
+pub fn evaluate(
+    authority: &Authority,
+    mandate: &Mandate,
+    signature_b64: &str,
+    amount_minor: u64,
+    allowed_merchants: &[String],
+    db: &Db,
+) -> Decision {
+    // H11: reuse the shared validator so evaluate and early-cache agree.
+    if let Decision::Reject { reason } = validate_stateless(
+        authority,
+        mandate,
+        signature_b64,
+        amount_minor,
+        allowed_merchants,
+    ) {
+        return Decision::Reject { reason };
     }
 
     match db.try_claim_nonce(&mandate.nonce) {

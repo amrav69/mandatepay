@@ -277,33 +277,28 @@ pub async fn checkout(
 
     let allowed_merchants = agent_policy.allowed_merchants.clone();
 
-    // Idempotency: same mandate_id already succeeded once — return cached order without
-    // re-consuming nonce or velocity budget, but only after the current request has passed
-    // the cheap authz gates that would be checked anyway:
-    //   1) authority.verify (signature)  2) expires_at  3) agent cap (already checked above)
-    // This ensures a forged/unverified request can't hit a stale ALLOW cache.
+    // H11: idempotency early-cache reuses the shared stateless validator (no nonce
+    // side effect) plus agent-cap and amount==cached checks. A forged request
+    // cannot hit a stale ALLOW cache because validate_stateless covers
+    // signature/expiry/scope/allowlist/amount.
     if let Ok(Some((cached_id, cached_amount))) = state
         .db
         .get_cached_order_with_amount(&req.mandate.mandate_id)
     {
-        let verify_ok = state.authority.verify(&req.mandate, &req.signature).is_ok();
-        let not_expired = mandates::unix_now() < req.mandate.expires_at;
-        let allowlist_ok = allowed_merchants
-            .iter()
-            .any(|m| m == &req.mandate.merchant_id);
-        let amount_ok = req.amount_minor != 0
-            && req.amount_minor <= req.mandate.max_amount_minor
-            && req.amount_minor <= agent_policy.max_cap
+        let stateless_ok = matches!(
+            policy::validate_stateless(
+                &state.authority,
+                &req.mandate,
+                &req.signature,
+                req.amount_minor,
+                &allowed_merchants,
+            ),
+            Decision::Allow { .. }
+        );
+        let cap_ok = req.amount_minor <= agent_policy.max_cap
             && req.mandate.max_amount_minor <= agent_policy.max_cap;
-        // Fix #1: also verify the cached amount matches the current request — otherwise
-        // the same mandate_id with a different (still valid) amount would silently return
-        // the wrong order for the amount the caller specified.
-        if verify_ok
-            && not_expired
-            && allowlist_ok
-            && amount_ok
-            && req.amount_minor == cached_amount
-        {
+        // Amount must match the cached order, otherwise fall through to nonce replay.
+        if stateless_ok && cap_ok && req.amount_minor == cached_amount {
             return Ok(Json(DecisionResponse {
                 decision: "ALLOW".into(),
                 reason: "idempotent replay: cached order returned".into(),

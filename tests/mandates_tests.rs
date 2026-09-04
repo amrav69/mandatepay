@@ -133,6 +133,94 @@ fn expired_mandate_rejected_by_policy() {
 }
 
 #[test]
+fn stateless_validator_agrees_with_evaluate_without_consuming_nonce() {
+    // H11 regression: the idempotency early-cache must apply the same verdict
+    // as policy evaluation. validate_stateless has no DB side effect, so it
+    // must agree with evaluate on every rejection and be repeatable.
+    use mandatepay::policy::validate_stateless;
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let mut cases = vec![sample_mandate("n_s0")];
+    let mut bad_version = sample_mandate("n_s1");
+    bad_version.version = 2;
+    cases.push(bad_version);
+    let mut bad_action = sample_mandate("n_s2");
+    bad_action.action = "payout".into();
+    cases.push(bad_action);
+    let mut bad_ccy = sample_mandate("n_s3");
+    bad_ccy.currency = "USD".into();
+    cases.push(bad_ccy);
+    let mut bad_cap = sample_mandate("n_s4");
+    bad_cap.max_amount_minor = 0;
+    cases.push(bad_cap);
+    let mut bad_window = sample_mandate("n_s5");
+    bad_window.expires_at = bad_window.issued_at;
+    cases.push(bad_window);
+    let mut bad_ids = sample_mandate("n_s6");
+    bad_ids.merchant_id = "  ".into();
+    cases.push(bad_ids);
+    let mut future = sample_mandate("n_s7");
+    future.issued_at = unix_now() + 3600;
+    future.expires_at = unix_now() + 7200;
+    cases.push(future);
+    let mut expired = sample_mandate("n_s8");
+    expired.issued_at = unix_now() - 7200;
+    expired.expires_at = unix_now() - 3600;
+    cases.push(expired);
+    let mut bad_merchant = sample_mandate("n_s9");
+    bad_merchant.merchant_id = "merchant-999".into();
+    cases.push(bad_merchant);
+    for m in &cases {
+        let sig = auth.sign(m).unwrap();
+        let first = validate_stateless(&auth, m, &sig, CAP, &allow);
+        let second = validate_stateless(&auth, m, &sig, CAP, &allow);
+        assert!(
+            matches!(&first, Decision::Allow { .. }) == matches!(&second, Decision::Allow { .. }),
+            "stateless validator must be repeatable (no side effect)"
+        );
+        // Zero-amount and over-cap amount cases through the validator too.
+        assert!(matches!(
+            validate_stateless(&auth, m, &sig, 0, &allow),
+            Decision::Reject { .. }
+        ));
+        assert!(matches!(
+            validate_stateless(&auth, m, &sig, CAP * 10, &allow),
+            Decision::Reject { .. }
+        ));
+    }
+    // Forged signature rejected identically by both paths.
+    let m = sample_mandate("n_s_forged");
+    assert!(matches!(
+        validate_stateless(&auth, &m, "bogus", CAP, &allow),
+        Decision::Reject { .. }
+    ));
+    assert!(matches!(
+        policy::evaluate(&auth, &m, "bogus", CAP, &allow, &db),
+        Decision::Reject { .. }
+    ));
+    // Valid mandate: validator Allows repeatedly, evaluate Allows once then replays.
+    let m = sample_mandate("n_s_valid");
+    let sig = auth.sign(&m).unwrap();
+    assert!(matches!(
+        validate_stateless(&auth, &m, &sig, CAP, &allow),
+        Decision::Allow { .. }
+    ));
+    assert!(matches!(
+        validate_stateless(&auth, &m, &sig, CAP, &allow),
+        Decision::Allow { .. }
+    ));
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Allow { .. }
+    ));
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Reject { .. }
+    ));
+}
+
+#[test]
 fn replayed_nonce_rejected_second_time() {
     let auth = Authority::from_seed([7u8; 32]);
     let (_dir, db) = test_db();
