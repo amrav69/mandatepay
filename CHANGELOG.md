@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Signed payment mandates (Ed25519, `mandates.rs`) with spend caps, expiry, replay protection and merchant allowlist
-- Policy engine with 9 gates (`policy.rs`): version, action, currency, cap, merchant, amount, signature, expiry, nonce
+- Policy engine with 13 gates (`policy.rs`): version, action, currency, max>0, expires>issued, non-empty ids, issued_at leeway, expiry, signature, allowlist, amount>0, amount<=cap, nonce
 - SQLite ledger (`store.rs`): `decisions` audit trail, `nonces` replay, `orders` idempotency, `agents` per-agent caps
 - Gateway seam (`gateway.rs`): `Mock` ↔ `Razorpay` test-mode (`POST /v1/orders` basic auth), `live` flag
 - Axum server (`main.rs`): `POST /v1/mandates`, `POST /v1/checkout`, `GET /v1/decisions`, `GET /v1/stats`, `GET /v1/decisions/{id}`, `POST /v1/verify`, `GET /v1/chain/verify`, health and dashboard
@@ -20,10 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Attack suite (`src/bin/eval.rs`): 10 vectors, `10/10 REJECT` + control `ALLOW`, mean `~5ms`
 - Chaos harness (`src/bin/chaos.rs`): 10 concurrent checkouts on same mandate, at-most-once `allow+reject==10, 1 unique order, allow>=1` (idempotent replay returns `ALLOW` with cached order instead of `REJECT`)
 - Live dashboard (`dashboard/index.html`): liquid glass dark theme, polling `50` rows, replay viewer
-- CI (`ci.yml`): `fmt --check`, `clippy -D warnings`, `cargo test`, `cargo tarpaulin` (threshold `0` → `60` planned), `cargo audit`, live attack suite + chaos + chain verify on every push
+- CI (`ci.yml`): `fmt --check`, `clippy -D warnings`, `cargo test`, `cargo tarpaulin --fail-under 60`, `cargo audit`, live attack suite + chaos + chain verify on every push
 
 ### Security
-- No `unwrap` on money paths, integer `i64` paise only, `X-API-Key` or `Bearer` auth, `orders` idempotency cache
+- Fallible randomness/time/token paths (no `expect` panics on money paths), integer `i64` paise with checked casts, per-agent `X-API-Key`/`Bearer` + master key separation, generic policy errors (no cap/merchant oracle), `orders` idempotency cache with amount match
 
 ## [Unreleased]
 - Fix M9: `Mutex` poisoning handled via `unwrap_or_else(|e| e.into_inner())` on ~17 lock sites (`src/store.rs`)
