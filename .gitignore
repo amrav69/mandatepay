@@ -2,4 +2,6 @@
 .env
 .ephemeral_key
 *.db
-mandatepay
+# Anchored: ignore only the repo-root debug binary, not any future path/file named mandatepay.
+/mandatepay
+.vercel
