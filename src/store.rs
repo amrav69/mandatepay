@@ -683,6 +683,10 @@ impl Db {
                 "velocity_window_secs exceeds max {MAX_VELOCITY_WINDOW_SECS}"
             )));
         }
+        // Documented tradeoff: fixed windows aligned to epoch multiples, not a
+        // sliding log. All checkouts in [window_start, window_start+window) share
+        // one budget, and budgets reset on window boundaries. Simple and cheap;
+        // a sliding window would need per-checkout timestamps and pruning.
         let window_start = now - (now % velocity_window_secs as u64);
         conn.execute(
             "INSERT INTO agent_velocity (agent_id, window_start, count) VALUES (?1, ?2, 1)

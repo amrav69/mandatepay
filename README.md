@@ -169,6 +169,7 @@ Honesty is the bar — every number above is from `cargo run --bin eval` on the 
 ## Known limitations
 
 - `nonces` and `decisions` tables grow without TTL pruning — `store.rs` never deletes expired nonces or mandates. For a demo this is fine; for production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7` and a `decisions` retention job.
+- Velocity windows are fixed windows aligned to epoch multiples (`window_start = now - now % window`), not sliding windows. Budgets reset on window boundaries by design; see `check_velocity`.
 
 ## License
 
