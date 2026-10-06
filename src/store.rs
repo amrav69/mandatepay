@@ -33,6 +33,15 @@ pub struct AgentPolicy {
     pub allowed_merchants: Vec<String>,
 }
 
+/// Single SQLite connection behind one mutex. Every method locks, runs
+/// synchronously, and releases before returning; no guard is ever held across
+/// an `.await` (verified: no `.lock()` in async handlers — `app.rs` only
+/// calls these sync methods, and the sole request-path `.await`
+/// (`gateway.create_order`) sits between two separate lock acquisitions).
+/// Throughput ceiling: all DB work serializes on this one mutex, so peak
+/// checkout rate is bounded by single-connection SQLite latency (~ms per
+/// op). That is deliberate for a demo ledger; scaling out means a pool or
+/// WAL-mode readers, not a redesign of this invariant.
 pub struct Db(Mutex<Connection>);
 
 /// How long a `pending` order reservation is honored before a retry may
@@ -915,6 +924,11 @@ impl Db {
     }
 
     /// M5: filter in SQL so pagination window correctly reflects matches.
+    /// NOTE: the `LOWER(agent_id) LIKE ?` leading-wildcard search cannot use
+    /// an index (full scan of `agents`). That is acceptable because this is
+    /// only reachable from the admin/search path (`GET /v1/agents`, used by
+    /// the dashboard) — never from the payment hot path (`issue`/`checkout`,
+    /// which use PK lookups). Do not call this from checkout.
     pub fn list_agents_paginated_filtered(
         &self,
         limit: i64,
