@@ -289,9 +289,11 @@ pub async fn checkout(
             // C4: atomic PENDING reservation *before* gateway call.
             // INSERT OR IGNORE with PRIMARY KEY on mandate_id guarantees only one concurrent
             // writer wins the reservation; losers see `false` and must not call gateway.
-            let reserved = state
-                .db
-                .try_reserve_order(&req.mandate.mandate_id, req.amount_minor)?;
+            let reserved = state.db.try_reserve_order(
+                &req.mandate.mandate_id,
+                &req.mandate.nonce,
+                req.amount_minor,
+            )?;
             if !reserved {
                 // Lost reservation: someone else owns this mandate_id. If they already completed,
                 // return their cached order as idempotent replay; otherwise we're racing a pending

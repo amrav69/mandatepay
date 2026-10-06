@@ -112,7 +112,10 @@ fn c2_migration_adds_audit_columns_to_legacy_db() {
         .unwrap();
     assert!(db.verify_chain().unwrap());
     // Orders migration: pending reservation should work on legacy DB
-    assert!(db.try_reserve_order("mnd_legacy_1", 1000).unwrap());
+    assert!(
+        db.try_reserve_order("mnd_legacy_1", "n_legacy_1", 1000)
+            .unwrap()
+    );
     let (oid, status) = db.get_order_status("mnd_legacy_1").unwrap().unwrap();
     assert_eq!(oid, "__PENDING__");
     assert_eq!(status, "pending");
@@ -128,9 +131,9 @@ fn c2_migration_adds_audit_columns_to_legacy_db() {
 fn c4_pending_reservation_prevents_duplicate_orders() {
     let db = Db::open(":memory:").unwrap();
     // First reservation should succeed
-    assert!(db.try_reserve_order("mnd_dup", 5000).unwrap());
+    assert!(db.try_reserve_order("mnd_dup", "n_dup", 5000).unwrap());
     // Second concurrent reservation with same mandate_id must fail (atomic)
-    assert!(!db.try_reserve_order("mnd_dup", 5000).unwrap());
+    assert!(!db.try_reserve_order("mnd_dup", "n_dup2", 5000).unwrap());
     // Cache should still be None while pending (not completed)
     assert!(db.get_cached_order("mnd_dup").unwrap().is_none());
     // Finalize first
@@ -141,9 +144,9 @@ fn c4_pending_reservation_prevents_duplicate_orders() {
         Some("order_123")
     );
     // Further reservation after completed should still fail (primary key)
-    assert!(!db.try_reserve_order("mnd_dup", 5000).unwrap());
+    assert!(!db.try_reserve_order("mnd_dup", "n_dup3", 5000).unwrap());
     // Gateway failure case: pending cleared, should allow re-reserve after clear
-    assert!(db.try_reserve_order("mnd_fail", 1000).unwrap());
+    assert!(db.try_reserve_order("mnd_fail", "n_fail", 1000).unwrap());
     db.clear_pending_order("mnd_fail").unwrap();
     // After clear, the mandate_id row is gone, so get_cached None and we can reserve again
     assert!(db.get_cached_order("mnd_fail").unwrap().is_none());
@@ -211,6 +214,106 @@ fn h8_update_agent_atomic_partial_updates() {
     let p = db.get_agent_policy("atomic-agent").unwrap().unwrap();
     assert_eq!(p.max_cap, 99999);
     assert_eq!(p.velocity_limit, 7);
+}
+
+fn file_db(name: &str) -> (tempfile::TempDir, String, Db) {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join(name);
+    let path_str = path.to_str().unwrap().to_string();
+    let db = Db::open(&path_str).expect("db open");
+    (dir, path_str, db)
+}
+
+fn age_pending_to_stale(path: &str, mandate_id: &str) {
+    use mandatepay::mandates::unix_now;
+    use mandatepay::store::PENDING_TTL_SECS;
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let stale = unix_now() as i64 - PENDING_TTL_SECS as i64 - 100;
+    let changed = conn
+        .execute(
+            "UPDATE orders SET reserved_at = ?1 WHERE mandate_id = ?2",
+            rusqlite::params![stale, mandate_id],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+
+#[test]
+fn migration_v3_adds_reserved_at_and_nonce_to_orders() {
+    // Pre-v3 DB: current v2 schema with status but without reserved_at/nonce.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("v2.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL, payload TEXT NOT NULL, audit_hash TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL DEFAULT '');
+            CREATE TABLE nonces (nonce TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+            CREATE TABLE orders (mandate_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'completed');
+            CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL DEFAULT 50000, velocity_limit INTEGER NOT NULL DEFAULT 50, velocity_window_secs INTEGER NOT NULL DEFAULT 60, allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            CREATE TABLE agent_velocity (agent_id TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_id, window_start));
+            PRAGMA user_version = 2;
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO orders (mandate_id, order_id, amount, created_at, status) VALUES ('mnd_v2', 'order_v2', 100, 1, 'completed')",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    // Existing row survives, new columns exist, version bumped.
+    assert_eq!(
+        db.get_cached_order("mnd_v2").unwrap().as_deref(),
+        Some("order_v2")
+    );
+    assert!(db.try_reserve_order("mnd_v3_new", "n_v3_new", 500).unwrap());
+    let version: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+}
+
+#[test]
+fn fresh_pending_blocks_duplicate_and_is_never_stolen() {
+    let (_dir, _path, db) = file_db("pending_fresh.db");
+    // (a) fresh pending row still blocks a duplicate.
+    assert!(db.try_reserve_order("mnd_fresh", "n_fresh", 1000).unwrap());
+    assert!(!db.try_reserve_order("mnd_fresh", "n_other", 1000).unwrap());
+    // (c) a non-stale pending row is never stolen: explicit reclaim refuses,
+    // row stays pending, and a further reserve still fails.
+    assert!(!db.reclaim_stale_pending("mnd_fresh").unwrap());
+    let (oid, status) = db.get_order_status("mnd_fresh").unwrap().unwrap();
+    assert_eq!(oid, "__PENDING__");
+    assert_eq!(status, "pending");
+    assert!(!db.try_reserve_order("mnd_fresh", "n_third", 1000).unwrap());
+}
+
+#[test]
+fn stale_pending_is_reclaimed_and_frees_original_nonce() {
+    let (_dir, path, db) = file_db("pending_stale.db");
+    // Simulate crashed attempt: nonce claimed (evaluate) + pending reserved, never finalized.
+    assert!(db.try_claim_nonce("n_crashed").unwrap());
+    assert!(
+        db.try_reserve_order("mnd_crash", "n_crashed", 1000)
+            .unwrap()
+    );
+    drop(db);
+    age_pending_to_stale(&path, "mnd_crash");
+    let db = Db::open(&path).unwrap();
+    // (b) pending row older than TTL is reclaimed by a retry.
+    assert!(db.try_reserve_order("mnd_crash", "n_retry", 1000).unwrap());
+    // Reclaimed retry's original nonce must be free again (not a replay).
+    assert!(
+        db.try_claim_nonce("n_crashed").unwrap(),
+        "original nonce must be freed when its stale pending is reclaimed"
+    );
+    // Row is pending again under the retry.
+    let (oid, status) = db.get_order_status("mnd_crash").unwrap().unwrap();
+    assert_eq!(oid, "__PENDING__");
+    assert_eq!(status, "pending");
 }
 
 #[test]

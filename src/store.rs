@@ -35,6 +35,11 @@ pub struct AgentPolicy {
 
 pub struct Db(Mutex<Connection>);
 
+/// How long a `pending` order reservation is honored before a retry may
+/// reclaim it. Must comfortably exceed the gateway timeout (10s) so a slow
+/// but live attempt can never have its reservation stolen mid-flight.
+pub const PENDING_TTL_SECS: u64 = 300;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +60,9 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'completed'
+    status TEXT NOT NULL DEFAULT 'completed',
+    reserved_at INTEGER NOT NULL DEFAULT 0,
+    nonce TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
@@ -120,6 +127,26 @@ impl Db {
                 [],
             )?;
         }
+        // Migration v3: orders.reserved_at + orders.nonce for stale-pending reclaim.
+        // reserved_at records when the pending reservation was taken; nonce records
+        // which nonce claim owns it so reclaim can free exactly that claim.
+        // Existing rows default to 0/'', i.e. treated as stale and reclaimable —
+        // the safe direction (unblocks) since a pre-upgrade pending could only
+        // come from a crashed attempt.
+        let has_reserved = Self::column_exists(&conn, "orders", "reserved_at")?;
+        if !has_reserved {
+            conn.execute(
+                "ALTER TABLE orders ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        let has_order_nonce = Self::column_exists(&conn, "orders", "nonce")?;
+        if !has_order_nonce {
+            conn.execute(
+                "ALTER TABLE orders ADD COLUMN nonce TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         // Backfill legacy audit_hash chain if any row still has empty hash (DB upgraded from pre-chain version)
         let empty_count: i64 = conn
             .query_row(
@@ -169,6 +196,9 @@ impl Db {
         }
         if version < 2 {
             conn.execute_batch("PRAGMA user_version = 2")?;
+        }
+        if version < 3 {
+            conn.execute_batch("PRAGMA user_version = 3")?;
         }
         Ok(Db(Mutex::new(conn)))
     }
@@ -385,13 +415,111 @@ impl Db {
 
     /// C4: atomic pending reservation claimed *before* gateway call.
     /// Returns true if reservation succeeded (we own the mandate), false if another request already holds it.
-    pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
+    ///
+    /// A `pending` row older than `PENDING_TTL_SECS` is treated as orphaned
+    /// (crash between reserve and finalize/clear) and atomically reclaimed:
+    /// the original attempt's nonce claim is freed and the row is retaken.
+    /// Fresh pending rows are never stolen. The whole check runs inside
+    /// `BEGIN IMMEDIATE` so concurrent reservers serialize.
+    pub fn try_reserve_order(
+        &self,
+        mandate_id: &str,
+        nonce: &str,
+        amount: u64,
+    ) -> rusqlite::Result<bool> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let changed = conn.execute(
-            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, '__PENDING__', ?2, ?3, 'pending')",
-            params![mandate_id, amount as i64, unix_now() as i64],
-        )?;
-        Ok(changed > 0)
+        conn.execute("BEGIN IMMEDIATE", [])?;
+        let result: rusqlite::Result<bool> = (|| {
+            let now = unix_now() as i64;
+            let changed = conn.execute(
+                "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status, reserved_at, nonce) VALUES (?1, '__PENDING__', ?2, ?3, 'pending', ?3, ?4)",
+                params![mandate_id, amount as i64, now, nonce],
+            )?;
+            if changed > 0 {
+                return Ok(true);
+            }
+            let (status, reserved_at, stored_nonce): (String, i64, String) = conn.query_row(
+                "SELECT status, reserved_at, nonce FROM orders WHERE mandate_id = ?1",
+                params![mandate_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            if status != "pending" {
+                // Completed order: someone already owns this mandate_id.
+                return Ok(false);
+            }
+            if now - reserved_at < PENDING_TTL_SECS as i64 {
+                // Fresh pending: live attempt in flight, never steal.
+                return Ok(false);
+            }
+            // Stale pending: reclaim. Free exactly the original attempt's nonce
+            // claim (the retry re-claims via evaluate), then retake the row.
+            // The caller's own nonce claim (made in evaluate before reserve) is
+            // untouched unless it is the same value, in which case freeing it is
+            // precisely what lets the retry proceed.
+            if !stored_nonce.is_empty() {
+                conn.execute("DELETE FROM nonces WHERE nonce = ?1", params![stored_nonce])?;
+            }
+            conn.execute(
+                "UPDATE orders SET order_id = '__PENDING__', amount = ?1, created_at = ?2, reserved_at = ?2, nonce = ?3 WHERE mandate_id = ?4 AND status = 'pending'",
+                params![amount as i64, now, nonce, mandate_id],
+            )?;
+            Ok(true)
+        })();
+        match result {
+            Ok(v) => {
+                conn.execute("COMMIT", [])?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
+    }
+
+    /// Delete a stale `pending` reservation (and free its nonce claim) without
+    /// taking it over. Used before `evaluate` so a retry of a crashed attempt
+    /// is not rejected as a replayed nonce. Returns true if anything was
+    /// reclaimed. Fresh pending rows are never touched.
+    pub fn reclaim_stale_pending(&self, mandate_id: &str) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("BEGIN IMMEDIATE", [])?;
+        let result: rusqlite::Result<bool> = (|| {
+            let now = unix_now() as i64;
+            let row: Option<(String, i64, String)> = match conn.query_row(
+                "SELECT status, reserved_at, nonce FROM orders WHERE mandate_id = ?1",
+                params![mandate_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ) {
+                Ok(v) => Some(v),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e),
+            };
+            let Some((status, reserved_at, stored_nonce)) = row else {
+                return Ok(false);
+            };
+            if status != "pending" || now - reserved_at < PENDING_TTL_SECS as i64 {
+                return Ok(false);
+            }
+            if !stored_nonce.is_empty() {
+                conn.execute("DELETE FROM nonces WHERE nonce = ?1", params![stored_nonce])?;
+            }
+            conn.execute(
+                "DELETE FROM orders WHERE mandate_id = ?1 AND status = 'pending'",
+                params![mandate_id],
+            )?;
+            Ok(true)
+        })();
+        match result {
+            Ok(v) => {
+                conn.execute("COMMIT", [])?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
     }
 
     pub fn finalize_reserved_order(

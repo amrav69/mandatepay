@@ -292,6 +292,45 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
 }
 
 #[test]
+fn crashed_attempt_retry_not_rejected_as_replay_after_reclaim() {
+    use mandatepay::store::PENDING_TTL_SECS;
+    let auth = Authority::from_seed([7u8; 32]);
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("crash.db").to_str().unwrap().to_string();
+    let db = Db::open(&path).expect("db open");
+    let allow = allowlist();
+    let mut m = sample_mandate("n_crash_retry");
+    m.mandate_id = "mnd_crash_retry".into();
+    let sig = auth.sign(&m).unwrap();
+    // First attempt reaches evaluate (claims nonce) + reserve (pending), then "crashes".
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Allow { .. }
+    ));
+    assert!(db.try_reserve_order(&m.mandate_id, &m.nonce, CAP).unwrap());
+    drop(db);
+    // Age the pending row past the TTL to simulate a long-dead attempt.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let stale = unix_now() as i64 - PENDING_TTL_SECS as i64 - 100;
+        conn.execute(
+            "UPDATE orders SET reserved_at = ?1 WHERE mandate_id = 'mnd_crash_retry'",
+            rusqlite::params![stale],
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).expect("db reopen");
+    // Retry of the identical mandate must reclaim and Allow, not fail as replay.
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+            Decision::Allow { .. }
+        ),
+        "retry after crash must reclaim stale pending, not reject as replay"
+    );
+}
+
+#[test]
 fn gateway_failure_rollback_makes_nonce_retryable() {
     // Gateway failure case: after evaluate Allow (nonce claimed), if gateway fails
     // the app rolls back nonce so the same mandate can be retried.

@@ -74,7 +74,26 @@ pub fn evaluate(
 
     match db.try_claim_nonce(&mandate.nonce) {
         Ok(true) => {}
-        Ok(false) => return reject("nonce already consumed: possible replay"),
+        Ok(false) => {
+            // The nonce is already claimed. That usually means a replay — but
+            // it can also mean the original attempt crashed after claiming the
+            // nonce and reserving a pending order without ever reaching the
+            // gateway. If that pending reservation is stale (older than
+            // PENDING_TTL_SECS), reclaim frees the dead claim; retry the claim
+            // exactly once. Fresh pending rows are never touched, so a live
+            // concurrent attempt still wins and this stays a replay reject.
+            let reclaimed = db
+                .reclaim_stale_pending(&mandate.mandate_id)
+                .unwrap_or(false);
+            if reclaimed {
+                match db.try_claim_nonce(&mandate.nonce) {
+                    Ok(true) => {}
+                    _ => return reject("nonce already consumed: possible replay"),
+                }
+            } else {
+                return reject("nonce already consumed: possible replay");
+            }
+        }
         Err(e) => return reject(format!("nonce ledger failure: {e}")),
     }
 
