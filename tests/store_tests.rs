@@ -317,6 +317,67 @@ fn stale_pending_is_reclaimed_and_frees_original_nonce() {
 }
 
 #[test]
+fn velocity_refund_restores_budget_after_gateway_failure() {
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("refund-agent", Some(50000), Some(5), Some(60), None)
+        .unwrap();
+    // Success path: check_velocity increments and is NOT refunded.
+    assert!(db.check_velocity("refund-agent").unwrap());
+    assert_eq!(db.velocity_count("refund-agent").unwrap(), 1);
+    // Failure path: the compensating decrement restores the budget.
+    assert!(db.check_velocity("refund-agent").unwrap());
+    assert_eq!(db.velocity_count("refund-agent").unwrap(), 2);
+    db.refund_velocity("refund-agent").unwrap();
+    assert_eq!(
+        db.velocity_count("refund-agent").unwrap(),
+        1,
+        "gateway failure must leave the count as if the failed request never happened"
+    );
+}
+
+#[test]
+fn velocity_refund_saturates_at_zero() {
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("sat-agent", Some(50000), Some(5), Some(60), None)
+        .unwrap();
+    // Refund with no prior check: stays zero, never negative, no error.
+    assert_eq!(db.velocity_count("sat-agent").unwrap(), 0);
+    db.refund_velocity("sat-agent").unwrap();
+    db.refund_velocity("sat-agent").unwrap();
+    assert_eq!(db.velocity_count("sat-agent").unwrap(), 0);
+    // Limit still enforced afterwards: exactly 5 Trues then false.
+    let mut oks = 0;
+    for _ in 0..7 {
+        if db.check_velocity("sat-agent").unwrap() {
+            oks += 1;
+        }
+    }
+    assert_eq!(oks, 5);
+}
+
+#[test]
+fn velocity_refund_never_negative_under_concurrency() {
+    use std::sync::Arc;
+    let db = Arc::new(Db::open(":memory:").unwrap());
+    db.update_agent("conc-agent", Some(50000), Some(10_000), Some(60), None)
+        .unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = d.check_velocity("conc-agent");
+                let _ = d.refund_velocity("conc-agent");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(db.velocity_count("conc-agent").unwrap(), 0);
+}
+
+#[test]
 fn app_605_create_agent_just_inserted_not_panics() {
     // Ensures the post-insert get_agent_policy -> expect path is now ok_or_else and does not panic.
     // We call try_create_agent then get_agent_policy and assert it returns Some.

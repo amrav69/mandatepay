@@ -327,6 +327,9 @@ pub async fn checkout(
                     Err(e) => {
                         let _ = state.db.clear_pending_order(&req.mandate.mandate_id);
                         let _ = state.db.rollback_nonce(&req.mandate.nonce);
+                        // The velocity slot was consumed before the gateway call;
+                        // the order never happened, so give the budget back.
+                        let _ = state.db.refund_velocity(agent_id);
                         reason = format!("{reason}; gateway: {e}");
                         label = "REJECT";
                     }
