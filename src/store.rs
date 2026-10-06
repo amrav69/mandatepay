@@ -526,6 +526,10 @@ impl Db {
 
     /// C4: atomic pending reservation claimed *before* gateway call.
     /// Returns true if reservation succeeded (we own the mandate), false if another request already holds it.
+    // TODO(phase3): a stale pending row (crash between reserve and
+    // finalize/clear) blocks its mandate_id forever. That failure mode is
+    // fail-closed (it cannot double-charge) but needs reclaim logic, and
+    // reclaim must not ship without a gateway idempotency key.
     pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
         if amount > i64::MAX as u64 {
             return Err(rusqlite::Error::InvalidParameterName(

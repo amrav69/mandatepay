@@ -182,6 +182,7 @@ Honesty is the bar — the attack *vectors* above are what `cargo run --bin eval
 
 ## Known limitations
 
+- Public reads are a deliberate demo tradeoff: `GET /v1/decisions*`, `/v1/stats`, `/v1/agents` and the dashboard work without a key so judges can poke the ledger. What protects payloads is H5 redaction — mandate nonces in decision payloads are redacted unless the caller presents the master key. Gate these routes before any production use.
 - `nonces` and `decisions` tables grow without TTL pruning — `store.rs` never deletes expired nonces or mandates. For a demo this is fine; for production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7` and a `decisions` retention job.
 - Velocity windows are fixed windows aligned to epoch multiples (`window_start = now - now % window`), not sliding windows. Budgets reset on window boundaries by design; see `check_velocity`.
 
