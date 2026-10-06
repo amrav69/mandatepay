@@ -49,6 +49,13 @@ pub fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// Saturating `unix_now()` as `i64` for SQLite storage. A bare `as` cast
+/// would wrap past `i64::MAX`; saturating fails safe (far-future timestamp
+/// instead of a negative one).
+pub fn unix_now_i64() -> i64 {
+    unix_now().min(i64::MAX as u64) as i64
+}
+
 pub fn new_token(prefix: &str, entropy_bytes: usize) -> String {
     let mut buf = vec![0u8; entropy_bytes];
     getrandom::fill(&mut buf).expect("os randomness unavailable");

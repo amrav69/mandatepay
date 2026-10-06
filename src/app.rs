@@ -553,12 +553,17 @@ pub async fn update_agent(
             "velocity_limit must be positive".into(),
         ));
     }
-    if let Some(v) = req.velocity_window_secs
-        && v == 0
-    {
-        return Err(AppError::BadRequest(
-            "velocity_window_secs must be positive".into(),
-        ));
+    if let Some(v) = req.velocity_window_secs {
+        if v == 0 {
+            return Err(AppError::BadRequest(
+                "velocity_window_secs must be positive".into(),
+            ));
+        }
+        if v > i64::MAX as u64 {
+            return Err(AppError::BadRequest(
+                "velocity_window_secs exceeds i64::MAX".into(),
+            ));
+        }
     }
     let policy = state
         .db
@@ -619,12 +624,17 @@ pub async fn create_agent(
             "velocity_limit must be positive".into(),
         ));
     }
-    if let Some(v) = req.velocity_window_secs
-        && v == 0
-    {
-        return Err(AppError::BadRequest(
-            "velocity_window_secs must be positive".into(),
-        ));
+    if let Some(v) = req.velocity_window_secs {
+        if v == 0 {
+            return Err(AppError::BadRequest(
+                "velocity_window_secs must be positive".into(),
+            ));
+        }
+        if v > i64::MAX as u64 {
+            return Err(AppError::BadRequest(
+                "velocity_window_secs exceeds i64::MAX".into(),
+            ));
+        }
     }
     // Atomic: INSERT OR IGNORE returns 0 if already exists — no separate existence check (avoids TOCTOU).
     let inserted = state

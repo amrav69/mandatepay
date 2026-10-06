@@ -1,4 +1,4 @@
-use crate::mandates::unix_now;
+use crate::mandates::{unix_now, unix_now_i64};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -248,7 +248,7 @@ impl Db {
         // and cannot fork the hash chain (read prev_hash -> compute -> insert).
         conn.execute("BEGIN IMMEDIATE", [])?;
         let result: rusqlite::Result<()> = (|| {
-            let ts = unix_now() as i64;
+            let ts = unix_now_i64();
             let prev_hash: String = conn
                 .query_row(
                     "SELECT audit_hash FROM decisions ORDER BY id DESC LIMIT 1",
@@ -294,7 +294,7 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute(
             "INSERT OR IGNORE INTO nonces (nonce, claimed_at) VALUES (?1, ?2)",
-            params![nonce, unix_now() as i64],
+            params![nonce, unix_now_i64()],
         )?;
         Ok(changed > 0)
     }
@@ -311,7 +311,7 @@ impl Db {
     /// log and deleting rows would break `verify_chain`.
     pub fn prune_expired(&self) -> rusqlite::Result<PruneStats> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = unix_now() as i64;
+        let now = unix_now_i64();
         let nonce_cutoff = now.saturating_sub(NONCE_RETENTION_SECS as i64);
         let nonces_deleted = conn.execute(
             "DELETE FROM nonces WHERE claimed_at < ?1",
@@ -476,7 +476,7 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, ?2, ?3, ?4, 'completed')",
-            params![mandate_id, order_id, amount as i64, unix_now() as i64],
+            params![mandate_id, order_id, amount as i64, unix_now_i64()],
         )?;
         Ok(())
     }
@@ -498,7 +498,7 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("BEGIN IMMEDIATE", [])?;
         let result: rusqlite::Result<bool> = (|| {
-            let now = unix_now() as i64;
+            let now = unix_now_i64();
             let changed = conn.execute(
                 "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status, reserved_at, nonce) VALUES (?1, '__PENDING__', ?2, ?3, 'pending', ?3, ?4)",
                 params![mandate_id, amount as i64, now, nonce],
@@ -553,7 +553,7 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("BEGIN IMMEDIATE", [])?;
         let result: rusqlite::Result<bool> = (|| {
-            let now = unix_now() as i64;
+            let now = unix_now_i64();
             let row: Option<(String, i64, String)> = match conn.query_row(
                 "SELECT status, reserved_at, nonce FROM orders WHERE mandate_id = ?1",
                 params![mandate_id],
@@ -634,9 +634,11 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                // try_from fails closed (0) on corrupt negative rows instead of
+                // wrapping to huge caps via `as`.
+                max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -646,11 +648,11 @@ impl Db {
                 }),
             })
         } else {
-            let now = unix_now();
+            let now = unix_now_i64();
             conn.execute(
                 "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
                  VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
-                params![agent_id, now as i64],
+                params![agent_id, now],
             )?;
             Ok(AgentPolicy {
                 agent_id: agent_id.to_string(),
@@ -668,7 +670,7 @@ impl Db {
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
              VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
-            params![agent_id, now as i64],
+            params![agent_id, unix_now_i64()],
         )?;
         let (velocity_limit, velocity_window_secs): (i64, i64) = conn.query_row(
             "SELECT velocity_limit, velocity_window_secs FROM agents WHERE agent_id = ?1",
@@ -697,7 +699,7 @@ impl Db {
     /// Current velocity count for the agent's active window (0 if none).
     pub fn velocity_count(&self, agent_id: &str) -> rusqlite::Result<i64> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = unix_now() as i64;
+        let now = unix_now_i64();
         let window_secs: Option<i64> = match conn.query_row(
             "SELECT velocity_window_secs FROM agents WHERE agent_id = ?1",
             params![agent_id],
@@ -731,7 +733,7 @@ impl Db {
     /// increments-then-compares atomically under the mutex.
     pub fn refund_velocity(&self, agent_id: &str) -> rusqlite::Result<()> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = unix_now() as i64;
+        let now = unix_now_i64();
         let window_secs: i64 = match conn.query_row(
             "SELECT velocity_window_secs FROM agents WHERE agent_id = ?1",
             params![agent_id],
@@ -762,9 +764,11 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(Some(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                // try_from fails closed (0) on corrupt negative rows instead of
+                // wrapping to huge caps via `as`.
+                max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -789,7 +793,7 @@ impl Db {
     ) -> rusqlite::Result<AgentPolicy> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         // Ensure row exists first (atomic insert) then update only provided columns.
-        let now = unix_now() as i64;
+        let now = unix_now_i64();
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
             params![agent_id, now],
@@ -800,26 +804,26 @@ impl Db {
         if let Some(v) = max_cap {
             conn.execute(
                 "UPDATE agents SET max_cap = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![v as i64, unix_now_i64(), agent_id],
             )?;
         }
         if let Some(v) = velocity_limit {
             conn.execute(
                 "UPDATE agents SET velocity_limit = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![v as i64, unix_now_i64(), agent_id],
             )?;
         }
         if let Some(v) = velocity_window_secs {
             conn.execute(
                 "UPDATE agents SET velocity_window_secs = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now() as i64, agent_id],
+                params![v as i64, unix_now_i64(), agent_id],
             )?;
         }
         if let Some(v) = allowed_merchants {
             let merchants = serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string());
             conn.execute(
                 "UPDATE agents SET allowed_merchants = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![merchants, unix_now() as i64, agent_id],
+                params![merchants, unix_now_i64(), agent_id],
             )?;
         } else if max_cap.is_none() && velocity_limit.is_none() && velocity_window_secs.is_none() {
             // Touch updated_at even if no field changed? Not needed, but keep idempotency.
@@ -833,9 +837,10 @@ impl Db {
         let merchants: String = row.get(4)?;
         Ok(AgentPolicy {
             agent_id: row.get(0)?,
-            max_cap: row.get::<_, i64>(1)? as u64,
-            velocity_limit: row.get::<_, i64>(2)? as u32,
-            velocity_window_secs: row.get::<_, i64>(3)? as u64,
+            // try_from fails closed (0) on corrupt negative rows.
+            max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+            velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+            velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
             allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                 merchants
                     .split(',')
@@ -865,7 +870,7 @@ impl Db {
             None => r#"["merchant-001"]"#.to_string(),
         };
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = unix_now() as i64;
+        let now = unix_now_i64();
         let changed = conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
@@ -889,9 +894,11 @@ impl Db {
             let merchants: String = row.get(4)?;
             Ok(AgentPolicy {
                 agent_id: row.get(0)?,
-                max_cap: row.get::<_, i64>(1)? as u64,
-                velocity_limit: row.get::<_, i64>(2)? as u32,
-                velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                // try_from fails closed (0) on corrupt negative rows instead of
+                // wrapping to huge caps via `as`.
+                max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
                 allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                     merchants
                         .split(',')
@@ -959,9 +966,10 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: row.get::<_, i64>(1)? as u64,
-                    velocity_limit: row.get::<_, i64>(2)? as u32,
-                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    // try_from fails closed (0) on corrupt negative rows.
+                    max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                         merchants
                             .split(',')
@@ -980,9 +988,10 @@ impl Db {
                 let merchants: String = row.get(4)?;
                 Ok(AgentPolicy {
                     agent_id: row.get(0)?,
-                    max_cap: row.get::<_, i64>(1)? as u64,
-                    velocity_limit: row.get::<_, i64>(2)? as u32,
-                    velocity_window_secs: row.get::<_, i64>(3)? as u64,
+                    // try_from fails closed (0) on corrupt negative rows.
+                    max_cap: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    velocity_limit: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    velocity_window_secs: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
                     allowed_merchants: serde_json::from_str(&merchants).unwrap_or_else(|_| {
                         merchants
                             .split(',')

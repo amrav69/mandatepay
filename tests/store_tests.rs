@@ -99,6 +99,34 @@ fn prune_leaves_decisions_hash_chain_intact() {
 }
 
 #[test]
+fn negative_db_values_clamp_to_zero_fail_closed() {
+    // A corrupt/tampered agents row with negative limits must fail closed
+    // (caps of 0), never wrap to huge u64 caps via `as` casts.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("neg.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL DEFAULT 50000, velocity_limit INTEGER NOT NULL DEFAULT 50, velocity_window_secs INTEGER NOT NULL DEFAULT 60, allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL, payload TEXT NOT NULL, audit_hash TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL DEFAULT '');
+             CREATE TABLE nonces (nonce TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+             CREATE TABLE orders (mandate_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'completed', reserved_at INTEGER NOT NULL DEFAULT 0, nonce TEXT NOT NULL DEFAULT '');
+             CREATE TABLE agent_velocity (agent_id TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_id, window_start));",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES ('evil-agent', -5, -10, 60, '[\"merchant-001\"]', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    let p = db.get_agent_policy("evil-agent").unwrap().unwrap();
+    assert_eq!(p.max_cap, 0, "negative max_cap must clamp to 0, not wrap");
+    assert_eq!(p.velocity_limit, 0);
+}
+
+#[test]
 fn rollback_nonce_allows_retry() {
     let db = Db::open(":memory:").unwrap();
     let nonce = "n_test_rollback";

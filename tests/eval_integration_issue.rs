@@ -8,6 +8,40 @@ use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
 #[tokio::test]
+async fn patch_and_create_reject_huge_velocity_window() {
+    // velocity_window_secs = u64::MAX would wrap to negative i64 in storage
+    // and 500 every later checkout for that agent; must be 400 up front.
+    let (app, key) = test_app();
+    for (method, uri, body) in [
+        (
+            "PATCH",
+            "/v1/agents/win-agent".to_string(),
+            json!({"velocity_window_secs": u64::MAX}).to_string(),
+        ),
+        (
+            "POST",
+            "/v1/agents".to_string(),
+            json!({"agent_id": "win-agent2", "velocity_window_secs": u64::MAX}).to_string(),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .header("x-api-key", &key)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn issue_and_checkout_allow() {
     let (app, key) = test_app();
     let resp = app
