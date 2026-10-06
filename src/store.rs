@@ -810,7 +810,7 @@ impl Db {
         if let Some(v) = velocity_limit {
             conn.execute(
                 "UPDATE agents SET velocity_limit = ?1, updated_at = ?2 WHERE agent_id = ?3",
-                params![v as i64, unix_now_i64(), agent_id],
+                params![i64::from(v), unix_now_i64(), agent_id],
             )?;
         }
         if let Some(v) = velocity_window_secs {
@@ -863,7 +863,7 @@ impl Db {
         allowed_merchants: Option<Vec<String>>,
     ) -> rusqlite::Result<bool> {
         let max_cap_val = max_cap.unwrap_or(50000) as i64;
-        let velocity_limit_val = velocity_limit.unwrap_or(50) as i64;
+        let velocity_limit_val = i64::from(velocity_limit.unwrap_or(50));
         let velocity_window_secs_val = velocity_window_secs.unwrap_or(60) as i64;
         let merchants = match allowed_merchants {
             Some(v) => serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),

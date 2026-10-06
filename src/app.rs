@@ -666,9 +666,7 @@ pub async fn dashboard() -> impl IntoResponse {
 /// Whether demo-public reads are open. Only the exact value `1` opens them;
 /// anything else (including unset) requires auth. Demos only — see README.
 pub fn public_reads_open() -> bool {
-    std::env::var("MANDATEPAY_PUBLIC_READS")
-        .map(|v| v.trim() == "1")
-        .unwrap_or(false)
+    std::env::var("MANDATEPAY_PUBLIC_READS").is_ok_and(|v| v.trim() == "1")
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
