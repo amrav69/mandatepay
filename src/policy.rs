@@ -1,6 +1,10 @@
 use crate::mandates::{Authority, Mandate, unix_now};
 use crate::store::Db;
 
+/// Maximum tolerated clock skew between issuer and verifier. A mandate whose
+/// `issued_at` lies further in the future is rejected as not-yet-valid.
+pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
+
 pub enum Decision {
     Allow { reason: String },
     Reject { reason: String },
@@ -43,6 +47,9 @@ pub fn evaluate(
     }
     if unix_now() >= mandate.expires_at {
         return reject("mandate expired");
+    }
+    if mandate.issued_at > unix_now().saturating_add(MAX_CLOCK_SKEW_SECS) {
+        return reject("mandate issued_at is in the future");
     }
 
     if authority.verify(mandate, signature_b64).is_err() {

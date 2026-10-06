@@ -32,6 +32,37 @@ fn test_db() -> (TempDir, Db) {
 }
 
 #[test]
+fn future_issued_at_rejected_beyond_clock_skew() {
+    use mandatepay::policy::MAX_CLOCK_SKEW_SECS;
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let now = unix_now();
+    // issued_at 1h in the future, valid signature — must be rejected before verify.
+    let mut m = sample_mandate("n_future_skew");
+    m.issued_at = now + 3_600;
+    m.expires_at = now + 7_200;
+    let sig = auth.sign(&m).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+            Decision::Reject { reason } if reason.contains("issued_at")
+        ),
+        "mandate issued in the future must be rejected"
+    );
+    // Within skew (30s < 60s) — still accepted.
+    let mut m2 = sample_mandate("n_within_skew");
+    m2.issued_at = now + 30;
+    m2.expires_at = now + 3_600;
+    assert!(m2.issued_at <= now + MAX_CLOCK_SKEW_SECS);
+    let sig2 = auth.sign(&m2).unwrap();
+    assert!(matches!(
+        policy::evaluate(&auth, &m2, &sig2, CAP, &allow, &db),
+        Decision::Allow { .. }
+    ));
+}
+
+#[test]
 fn sign_then_verify_roundtrip_succeeds() {
     let auth = Authority::from_seed([7u8; 32]);
     let m = sample_mandate("n_roundtrip");
