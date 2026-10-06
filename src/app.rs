@@ -84,7 +84,9 @@ pub fn parse_max_cap() -> u64 {
 }
 
 /// Two-factor: `X-API-Key` proves *who* may submit (caller auth), the Ed25519 `signature` proves *what* is authorized (bounded, single-use).
-/// Both are required on `POST /v1/mandates` and `POST /v1/checkout`; read-only `GET /v1/decisions` etc. stay public for the dashboard.
+/// Both are required on `POST /v1/mandates` and `POST /v1/checkout`; read-only
+/// `GET /v1/decisions` etc. require the API key too unless
+/// `MANDATEPAY_PUBLIC_READS=1` (demos only).
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
@@ -642,7 +644,19 @@ pub async fn dashboard() -> impl IntoResponse {
     Html(html)
 }
 
+/// Whether demo-public reads are open. Only the exact value `1` opens them;
+/// anything else (including unset) requires auth. Demos only — see README.
+pub fn public_reads_open() -> bool {
+    std::env::var("MANDATEPAY_PUBLIC_READS")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
+
 pub fn build_router(state: Arc<AppState>) -> Router {
+    build_router_with_options(state, public_reads_open())
+}
+
+pub fn build_router_with_options(state: Arc<AppState>, public_reads: bool) -> Router {
     let protected = Router::new()
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))
@@ -656,10 +670,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             require_api_key,
         ));
 
-    // Public reads: health + dashboard + ledger/stats for demo. In production, gate /v1/decisions/* and /v1/agents behind read-auth or a redacted view.
-    Router::new()
-        .route("/", get(dashboard))
-        .route("/health", get(health))
+    // Reads: health + dashboard are always public. Ledger/stats/agent reads are
+    // public only when MANDATEPAY_PUBLIC_READS=1 (demos); otherwise they require
+    // the same API-key auth as the write endpoints.
+    let reads = Router::new()
         .route("/v1/decisions", get(list_decisions))
         .route("/v1/decisions/{id}", get(get_decision))
         .route("/v1/decisions/{id}/verify", get(verify_decision))
@@ -667,7 +681,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/chain/verify", get(chain_verify))
         .route("/v1/stats", get(ledger_stats))
         .route("/v1/metrics", get(ledger_stats))
-        .route("/v1/agents", get(list_agents))
+        .route("/v1/agents", get(list_agents));
+    let reads = if public_reads {
+        reads
+    } else {
+        reads.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ))
+    };
+
+    Router::new()
+        .route("/", get(dashboard))
+        .route("/health", get(health))
+        .merge(reads)
         .merge(protected)
         .with_state(state)
 }

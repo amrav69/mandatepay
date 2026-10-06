@@ -56,6 +56,7 @@ async fn metrics_endpoint_returns_counters() {
         .oneshot(
             Request::builder()
                 .uri("/v1/metrics")
+                .header("x-api-key", &api_key)
                 .body(Body::empty())
                 .unwrap(),
         )

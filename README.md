@@ -35,6 +35,7 @@ cargo run --bin eval
 - `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` — `rzp_test_...` from dashboard.razorpay.com → Settings → API Keys (test mode). Absent → mock gateway.
 - `MANDATEPAY_SEED` — base64 32 bytes, fixes authority key. Absent → ephemeral key per boot.
 - `ALLOWED_MERCHANTS` — comma list, default `merchant-001`.
+- `MANDATEPAY_PUBLIC_READS` — set to `1` to leave `GET /v1/decisions*`, `POST /v1/verify`, `GET /v1/chain/verify`, `GET /v1/stats|metrics`, `GET /v1/agents` public (demos only — the dashboard needs it). Unset (default) → those reads require the same `X-API-Key` as the write endpoints.
 
 ## Repo layout
 

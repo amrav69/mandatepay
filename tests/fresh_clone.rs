@@ -98,6 +98,7 @@ async fn fresh_clone_chain_verify_without_env() {
         .oneshot(
             Request::builder()
                 .uri("/v1/chain/verify")
+                .header("x-api-key", &api_key)
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -72,6 +72,7 @@ async fn verify_endpoint_validates_signature() {
                 .method("POST")
                 .uri("/v1/verify")
                 .header("content-type", "application/json")
+                .header("x-api-key", &key)
                 .body(Body::from(
                     json!({"mandate": mandate, "signature": sig}).to_string(),
                 ))
@@ -122,6 +123,7 @@ async fn chain_verify_true_after_writes() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/chain/verify")
+                .header("x-api-key", &key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -209,6 +211,7 @@ async fn list_agents_search() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?q=foo")
+                .header("x-api-key", &key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -253,6 +256,7 @@ async fn list_agents_pagination() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?limit=1&offset=0")
+                .header("x-api-key", &key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -271,6 +275,7 @@ async fn list_agents_pagination() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?limit=1&offset=1")
+                .header("x-api-key", &key)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -331,6 +336,7 @@ async fn list_agents_sort() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/agents?sort=max_cap&order=desc")
+                .header("x-api-key", &key)
                 .body(Body::empty())
                 .unwrap(),
         )
