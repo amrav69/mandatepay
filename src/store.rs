@@ -40,6 +40,26 @@ pub struct Db(Mutex<Connection>);
 /// but live attempt can never have its reservation stolen mid-flight.
 pub const PENDING_TTL_SECS: u64 = 300;
 
+/// How long a claimed nonce is retained before `prune_expired` may delete it.
+///
+/// SAFETY PROOF (why a pruned nonce can never enable a replay): mandates live
+/// at most 86_400s after issue (the `ttl_secs` validator cap in
+/// `IssueRequest`; keep in sync if that cap ever changes), and
+/// `policy::evaluate` rejects issues more than 60s in the future, so for a
+/// nonce claimed at time C: `expires_at <= C + 86_400 + 60`. Pruning deletes
+/// only rows with `claimed_at + RETENTION < now`, i.e. `now > C + 86_460`,
+/// hence `now > expires_at`. `policy::evaluate` checks expiry BEFORE the
+/// nonce lookup, so any replay of the pruned mandate is rejected at the
+/// expiry gate. Both sides use `unix_now`, so a clock jump affects prune and
+/// evaluate consistently (a backward jump only retains more rows).
+pub const NONCE_RETENTION_SECS: u64 = 86_400 + 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PruneStats {
+    pub nonces_deleted: u64,
+    pub velocity_deleted: u64,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +223,10 @@ impl Db {
         Ok(Db(Mutex::new(conn)))
     }
 
+    /// Append a decision to the tamper-evident hash chain. The `decisions`
+    /// table is an append-only audit log: rows are NEVER pruned or deleted
+    /// (not even by `prune_expired`), because `verify_chain` recomputes every
+    /// link from genesis and any gap fails verification.
     pub fn record_decision(
         &self,
         endpoint: &str,
@@ -270,6 +294,41 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM nonces WHERE nonce = ?1", params![nonce])?;
         Ok(())
+    }
+
+    /// Delete expired nonces and dead velocity windows. See
+    /// `NONCE_RETENTION_SECS` for why pruned nonces cannot enable replays.
+    /// `decisions` is deliberately never touched: it is an append-only audit
+    /// log and deleting rows would break `verify_chain`.
+    pub fn prune_expired(&self) -> rusqlite::Result<PruneStats> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let now = unix_now() as i64;
+        let nonce_cutoff = now.saturating_sub(NONCE_RETENTION_SECS as i64);
+        let nonces_deleted = conn.execute(
+            "DELETE FROM nonces WHERE claimed_at < ?1",
+            params![nonce_cutoff],
+        )? as u64;
+        // A velocity row (agent_id, window_start) can only ever match again
+        // if its window_start equals a future current window, and current
+        // windows are always >= now - window_secs. Deleting rows older than
+        // now minus the longest *currently configured* window is therefore
+        // safe. (If an operator later raises a window past this horizon, the
+        // worst case is one stale window under-counting — documented, harmless
+        // for a rate limiter.)
+        let max_window: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(velocity_window_secs), 60) FROM agents",
+            [],
+            |r| r.get(0),
+        )?;
+        let velocity_cutoff = now.saturating_sub(max_window.max(1));
+        let velocity_deleted = conn.execute(
+            "DELETE FROM agent_velocity WHERE window_start < ?1",
+            params![velocity_cutoff],
+        )? as u64;
+        Ok(PruneStats {
+            nonces_deleted,
+            velocity_deleted,
+        })
     }
 
     pub fn list_recent(&self, limit: i64) -> rusqlite::Result<Vec<DecisionRow>> {

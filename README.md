@@ -166,7 +166,7 @@ Honesty is the bar — every number above is from `cargo run --bin eval` on the 
 
 ## Known limitations
 
-- `nonces` and `decisions` tables grow without TTL pruning — `store.rs` never deletes expired nonces or mandates. For a demo this is fine; for production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7` and a `decisions` retention job.
+- `decisions` is an append-only audit log and is never pruned — deleting rows would break `verify_chain`. `nonces` and `agent_velocity` are pruned at startup and hourly (`Db::prune_expired`, interval via `MANDATEPAY_PRUNE_INTERVAL_SECS`, `0` disables the loop); a nonce is deleted only after its mandate must have expired (`claimed_at + 86400 + 60s`), and expiry is checked before the nonce lookup so pruned nonces can never enable a replay.
 
 ## License
 

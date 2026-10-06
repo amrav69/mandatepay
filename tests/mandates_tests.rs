@@ -331,6 +331,52 @@ fn crashed_attempt_retry_not_rejected_as_replay_after_reclaim() {
 }
 
 #[test]
+fn pruned_expired_mandate_replay_still_rejected_by_expiry() {
+    use mandatepay::store::NONCE_RETENTION_SECS;
+    let auth = Authority::from_seed([7u8; 32]);
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir
+        .path()
+        .join("prune_expire.db")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let db = Db::open(&path).expect("db open");
+    let allow = allowlist();
+    // Validly signed but already expired mandate.
+    let mut m = sample_mandate("n_pruned_expired");
+    m.issued_at = unix_now() - 7_200;
+    m.expires_at = unix_now() - 3_600;
+    let sig = auth.sign(&m).unwrap();
+    // Expiry gate fires before any nonce is consumed...
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Reject { reason } if reason.contains("expired")
+    ));
+    // ...so the nonce was never claimed; plant an ancient claim row and prune it.
+    assert!(db.try_claim_nonce(&m.nonce).unwrap());
+    drop(db);
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let old = unix_now() as i64 - NONCE_RETENTION_SECS as i64 - 3_600;
+        conn.execute(
+            "UPDATE nonces SET claimed_at = ?1 WHERE nonce = ?2",
+            rusqlite::params![old, m.nonce],
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).expect("db reopen");
+    assert_eq!(db.prune_expired().unwrap().nonces_deleted, 1);
+    // Replay after pruning: still rejected, by expiry — never as a fresh Allow.
+    // (The nonce row is gone so try_claim would succeed; the expiry gate at
+    // policy.rs must fire first. If gate ordering ever regresses, this fails.)
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Reject { reason } if reason.contains("expired")
+    ));
+}
+
+#[test]
 fn gateway_failure_rollback_makes_nonce_retryable() {
     // Gateway failure case: after evaluate Allow (nonce claimed), if gateway fails
     // the app rolls back nonce so the same mandate can be retried.

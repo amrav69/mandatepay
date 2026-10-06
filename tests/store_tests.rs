@@ -30,6 +30,74 @@ fn agent_crud_and_velocity() {
     assert!(!db.check_velocity("vel-agent").unwrap());
 }
 
+fn age_nonce(path: &str, nonce: &str, age_secs: u64) {
+    use mandatepay::mandates::unix_now;
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let old = unix_now() as i64 - age_secs as i64;
+    let changed = conn
+        .execute(
+            "UPDATE nonces SET claimed_at = ?1 WHERE nonce = ?2",
+            rusqlite::params![old, nonce],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+
+#[test]
+fn prune_deletes_expired_nonces_but_never_live_ones() {
+    use mandatepay::store::NONCE_RETENTION_SECS;
+    let (_dir, path, db) = file_db("prune_nonces.db");
+    assert!(db.try_claim_nonce("n_old").unwrap());
+    assert!(db.try_claim_nonce("n_live").unwrap());
+    drop(db);
+    // n_old belongs to a long-expired mandate; n_live was just claimed.
+    age_nonce(&path, "n_old", NONCE_RETENTION_SECS + 3_600);
+    let db = Db::open(&path).unwrap();
+    let stats = db.prune_expired().unwrap();
+    assert_eq!(stats.nonces_deleted, 1);
+    // Live nonce survives...
+    assert!(!db.try_claim_nonce("n_live").unwrap());
+    // ...and the pruned one is claimable again (its mandate is long expired,
+    // so evaluate would reject it at the expiry gate before this matters).
+    assert!(db.try_claim_nonce("n_old").unwrap());
+    // comfortably inside the window, but aged: deletion uses strict <,
+    // so only rows strictly older than the retention horizon go.
+    assert!(db.try_claim_nonce("n_edge").unwrap());
+    drop(db);
+    age_nonce(&path, "n_edge", NONCE_RETENTION_SECS - 3_600);
+    let db = Db::open(&path).unwrap();
+    let stats = db.prune_expired().unwrap();
+    assert_eq!(stats.nonces_deleted, 0);
+    assert!(!db.try_claim_nonce("n_edge").unwrap());
+}
+
+#[test]
+fn prune_drops_only_windows_outside_the_longest_configured() {
+    let (_dir, _path, db) = file_db("prune_velocity.db");
+    db.update_agent("win-agent", Some(50000), Some(1000), Some(60), None)
+        .unwrap();
+    assert!(db.check_velocity("win-agent").unwrap());
+    // Current-window row must survive a prune run.
+    let stats = db.prune_expired().unwrap();
+    assert_eq!(stats.velocity_deleted, 0);
+    assert_eq!(db.velocity_count("win-agent").unwrap(), 1);
+}
+
+#[test]
+fn prune_leaves_decisions_hash_chain_intact() {
+    let (_dir, _path, db) = file_db("prune_chain.db");
+    db.record_decision("/v1/mandates", "ISSUED", "cap 100", "{}")
+        .unwrap();
+    db.record_decision("/v1/checkout", "ALLOW", "ok", "{}")
+        .unwrap();
+    assert!(db.try_claim_nonce("n_chain_old").unwrap());
+    let stats = db.prune_expired().unwrap();
+    // Prune never touches the append-only audit log.
+    assert!(db.verify_chain().unwrap());
+    assert_eq!(db.stats().unwrap().total, 2);
+    let _ = stats;
+}
+
 #[test]
 fn rollback_nonce_allows_retry() {
     let db = Db::open(":memory:").unwrap();

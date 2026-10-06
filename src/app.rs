@@ -83,6 +83,15 @@ pub fn parse_max_cap() -> u64 {
         .unwrap_or(100_000)
 }
 
+/// Seconds between `prune_expired` runs. Default hourly; `0` disables the
+/// periodic loop (a single prune still runs at startup).
+pub fn parse_prune_interval_secs() -> u64 {
+    std::env::var("MANDATEPAY_PRUNE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(3_600)
+}
+
 /// Two-factor: `X-API-Key` proves *who* may submit (caller auth), the Ed25519 `signature` proves *what* is authorized (bounded, single-use).
 /// Both are required on `POST /v1/mandates` and `POST /v1/checkout`; read-only
 /// `GET /v1/decisions` etc. require the API key too unless

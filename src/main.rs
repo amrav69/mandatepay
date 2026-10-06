@@ -1,7 +1,7 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use mandatepay::{
-    app::{build_router, parse_max_cap},
+    app::{build_router, parse_max_cap, parse_prune_interval_secs},
     auth::resolve_api_key,
     gateway::Gateway,
     mandates::{self, Authority},
@@ -36,6 +36,41 @@ async fn main() {
         gateway,
         api_key: api_key.clone(),
         max_mandate_cap,
+    });
+
+    // Prune at startup, then periodically. The loop holds only an Arc and
+    // calls the synchronous prune between awaits; the Db mutex is never held
+    // across an .await (each prune borrows, runs, and releases inside its own
+    // call), so the task cannot deadlock the server.
+    let prune_state = state.clone();
+    tokio::spawn(async move {
+        match prune_state.db.prune_expired() {
+            Ok(s) => tracing::info!(
+                nonces_deleted = s.nonces_deleted,
+                velocity_deleted = s.velocity_deleted,
+                "prune at startup"
+            ),
+            Err(e) => tracing::warn!(error = %e, "prune at startup failed"),
+        }
+        let interval_secs = parse_prune_interval_secs();
+        if interval_secs == 0 {
+            return;
+        }
+        let mut ticker = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(interval_secs),
+            Duration::from_secs(interval_secs),
+        );
+        loop {
+            ticker.tick().await;
+            match prune_state.db.prune_expired() {
+                Ok(s) => tracing::info!(
+                    nonces_deleted = s.nonces_deleted,
+                    velocity_deleted = s.velocity_deleted,
+                    "periodic prune"
+                ),
+                Err(e) => tracing::warn!(error = %e, "periodic prune failed"),
+            }
+        }
     });
 
     let app = build_router(state);
