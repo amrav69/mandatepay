@@ -669,6 +669,11 @@ pub fn public_reads_open() -> bool {
     std::env::var("MANDATEPAY_PUBLIC_READS").is_ok_and(|v| v.trim() == "1")
 }
 
+/// Request bodies are bounded by axum's `Json` default limit (2 MiB, 413
+/// beyond it) — relied upon deliberately, pinned by
+/// `oversized_body_rejected_with_413`. No per-route limit layer: a single
+/// global bound keeps oversized input from ever reaching validation, SQLite,
+/// or the signer, and the test fails if a framework upgrade changes it.
 pub fn build_router(state: Arc<AppState>) -> Router {
     build_router_with_options(state, public_reads_open())
 }
