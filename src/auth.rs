@@ -105,6 +105,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_api_key_uses_env_or_ephemeral() {
+        // No other test reads MANDATEPAY_API_KEY, so mutating it here is safe.
+        let prev = std::env::var("MANDATEPAY_API_KEY").ok();
+        unsafe { std::env::set_var("MANDATEPAY_API_KEY", "  test-key-123  ") };
+        assert_eq!(resolve_api_key(), "test-key-123");
+        unsafe { std::env::remove_var("MANDATEPAY_API_KEY") };
+        let ephemeral = resolve_api_key();
+        assert_eq!(ephemeral.len(), 44, "32 raw bytes as STANDARD base64");
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("MANDATEPAY_API_KEY", v),
+                None => std::env::remove_var("MANDATEPAY_API_KEY"),
+            }
+        };
+    }
+
+    #[test]
+    fn extract_from_lowercase_bearer() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer lower-token"),
+        );
+        assert_eq!(extract_api_key(&h).as_deref(), Some("lower-token"));
+    }
+
+    #[test]
     fn verify_different_lengths_rejected_length_constant() {
         // Regression for M8: verify must not leak length via early return.
         // Hash-before-compare ensures fixed-length ct_eq, so different lengths still

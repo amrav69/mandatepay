@@ -180,6 +180,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_body_accepts_valid_order_rejects_garbage() {
+        let order = parse_razorpay_body(
+            r#"{"id":"order_1","entity":"order","amount":100,"currency":"INR","status":"created","created_at":1}"#,
+            true,
+        )
+        .unwrap();
+        assert_eq!(order.id, "order_1");
+        assert!(order.live);
+        assert!(parse_razorpay_body("{not an order}", false).is_err());
+        assert!(parse_razorpay_body("", false).is_err());
+    }
+
+    #[test]
     fn from_env_mock_when_no_keys() {
         let _lock = ENV_LOCK.lock().unwrap();
         let orig_id = std::env::var("RAZORPAY_KEY_ID").ok();

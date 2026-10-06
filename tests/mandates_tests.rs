@@ -292,6 +292,181 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
 }
 
 #[test]
+fn cheap_policy_gates_reject_before_nonce() {
+    // Every cheap gate in policy::evaluate must reject without consuming the
+    // nonce (each case uses a fresh nonce; all must stay claimable after).
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let now = unix_now();
+    let base = sample_mandate("n_base_unused");
+    let cases: Vec<(&str, Mandate, &str)> = vec![
+        (
+            "version",
+            Mandate {
+                version: 2,
+                nonce: "n_g_version".into(),
+                ..base.clone()
+            },
+            "version",
+        ),
+        (
+            "action",
+            Mandate {
+                action: "payout".into(),
+                nonce: "n_g_action".into(),
+                ..base.clone()
+            },
+            "scope",
+        ),
+        (
+            "currency",
+            Mandate {
+                currency: "USD".into(),
+                nonce: "n_g_currency".into(),
+                ..base.clone()
+            },
+            "not supported",
+        ),
+        (
+            "zero_cap",
+            Mandate {
+                max_amount_minor: 0,
+                nonce: "n_g_zerocap".into(),
+                ..base.clone()
+            },
+            "positive",
+        ),
+        (
+            "bad_window",
+            Mandate {
+                issued_at: now + 100,
+                expires_at: now + 50,
+                nonce: "n_g_window".into(),
+                ..base.clone()
+            },
+            "after issued_at",
+        ),
+        (
+            "empty_agent",
+            Mandate {
+                agent_id: "  ".into(),
+                nonce: "n_g_agent".into(),
+                ..base.clone()
+            },
+            "required",
+        ),
+        (
+            "empty_merchant",
+            Mandate {
+                merchant_id: "".into(),
+                nonce: "n_g_merchant".into(),
+                ..base.clone()
+            },
+            "required",
+        ),
+    ];
+    for (name, m, reason_part) in &cases {
+        let sig = auth.sign(m).unwrap();
+        assert!(
+            matches!(
+                policy::evaluate(&auth, m, &sig, CAP, &allow, &db),
+                Decision::Reject { reason } if reason.contains(reason_part)
+            ),
+            "gate {name} must reject"
+        );
+    }
+    // None of the gates consumed a nonce.
+    for nonce in [
+        "n_g_version",
+        "n_g_action",
+        "n_g_currency",
+        "n_g_zerocap",
+        "n_g_window",
+        "n_g_agent",
+        "n_g_merchant",
+    ] {
+        assert!(
+            db.try_claim_nonce(nonce).unwrap(),
+            "gate must not consume nonce {nonce}"
+        );
+    }
+}
+
+#[test]
+fn reclaim_retry_failure_stays_replay() {
+    // policy.rs second-claim-failure arm: a stale pending exists (stored N1)
+    // but the retry's own nonce N2 is independently consumed elsewhere.
+    // Reclaim frees N1, the retry claim of N2 still fails -> replay reject.
+    use mandatepay::store::PENDING_TTL_SECS;
+    let auth = Authority::from_seed([7u8; 32]);
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir
+        .path()
+        .join("reclaim_fail.db")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let db = Db::open(&path).expect("db open");
+    let allow = allowlist();
+    let mut m = sample_mandate("n_reclaim_fail_2");
+    m.mandate_id = "mnd_reclaim_fail".into();
+    let sig = auth.sign(&m).unwrap();
+    // N2 consumed elsewhere; stale pending stored under N1.
+    assert!(db.try_claim_nonce("n_reclaim_fail_2").unwrap());
+    assert!(
+        db.try_reserve_order("mnd_reclaim_fail", "n_reclaim_fail_1", CAP)
+            .unwrap()
+    );
+    drop(db);
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let stale = unix_now() as i64 - PENDING_TTL_SECS as i64 - 100;
+        conn.execute(
+            "UPDATE orders SET reserved_at = ?1 WHERE mandate_id = 'mnd_reclaim_fail'",
+            rusqlite::params![stale],
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).expect("db reopen");
+    assert!(matches!(
+        policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
+        Decision::Reject { reason } if reason.contains("replay")
+    ));
+}
+
+#[test]
+fn load_seed_honors_valid_env_and_falls_back() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use mandatepay::mandates::load_seed;
+    // No other test reads MANDATEPAY_SEED, so mutating it here is safe.
+    let prev = std::env::var("MANDATEPAY_SEED").ok();
+    let raw = [42u8; 32];
+    unsafe { std::env::set_var("MANDATEPAY_SEED", B64.encode(raw)) };
+    assert_eq!(load_seed(), raw);
+    // Malformed seed falls back to ephemeral randomness (still 32 bytes,
+    // and overwhelmingly likely not the garbage input).
+    unsafe { std::env::set_var("MANDATEPAY_SEED", "not-valid-base64!!!") };
+    let _ = load_seed();
+    unsafe { std::env::remove_var("MANDATEPAY_SEED") };
+    let _ = load_seed();
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("MANDATEPAY_SEED", v),
+            None => std::env::remove_var("MANDATEPAY_SEED"),
+        }
+    };
+}
+
+#[test]
+fn public_key_b64_decodes_to_32_bytes() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let auth = Authority::from_seed([7u8; 32]);
+    let raw = B64.decode(auth.public_key_b64().trim()).unwrap();
+    assert_eq!(raw.len(), 32);
+}
+
+#[test]
 fn crashed_attempt_retry_not_rejected_as_replay_after_reclaim() {
     use mandatepay::store::PENDING_TTL_SECS;
     let auth = Authority::from_seed([7u8; 32]);

@@ -127,6 +127,96 @@ fn negative_db_values_clamp_to_zero_fail_closed() {
 }
 
 #[test]
+fn unknown_agent_velocity_is_zero_and_refundable() {
+    // Covers the QueryReturnedNoRows arms: unknown agents read 0 and refund
+    // is a silent no-op rather than an error.
+    let db = Db::open(":memory:").unwrap();
+    assert_eq!(db.velocity_count("ghost-agent").unwrap(), 0);
+    db.refund_velocity("ghost-agent").unwrap();
+    assert_eq!(db.velocity_count("ghost-agent").unwrap(), 0);
+}
+
+#[test]
+fn zero_window_secs_fails_velocity_closed() {
+    // A tampered agents row with velocity_window_secs = 0 must surface as an
+    // error (fail closed), never divide by zero.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("zerowin.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL DEFAULT 50000, velocity_limit INTEGER NOT NULL DEFAULT 50, velocity_window_secs INTEGER NOT NULL DEFAULT 60, allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL, payload TEXT NOT NULL, audit_hash TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL DEFAULT '');
+             CREATE TABLE nonces (nonce TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+             CREATE TABLE orders (mandate_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'completed', reserved_at INTEGER NOT NULL DEFAULT 0, nonce TEXT NOT NULL DEFAULT '');
+             CREATE TABLE agent_velocity (agent_id TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_id, window_start));",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES ('zero-agent', 50000, 5, 0, '[\"merchant-001\"]', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    assert!(db.check_velocity("zero-agent").is_err());
+}
+
+#[test]
+fn legacy_csv_merchants_still_parse() {
+    // Pre-JSON agents rows stored comma-separated merchants; the fallback
+    // parser must keep working.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("csv.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL DEFAULT 50000, velocity_limit INTEGER NOT NULL DEFAULT 50, velocity_window_secs INTEGER NOT NULL DEFAULT 60, allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL, payload TEXT NOT NULL, audit_hash TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL DEFAULT '');
+             CREATE TABLE nonces (nonce TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+             CREATE TABLE orders (mandate_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'completed', reserved_at INTEGER NOT NULL DEFAULT 0, nonce TEXT NOT NULL DEFAULT '');
+             CREATE TABLE agent_velocity (agent_id TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_id, window_start));",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at) VALUES ('csv-agent', 50000, 5, 60, 'merchant-001, merchant-002', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    let p = db.get_agent_policy("csv-agent").unwrap().unwrap();
+    assert_eq!(p.allowed_merchants, vec!["merchant-001", "merchant-002"]);
+}
+
+#[test]
+fn missing_decision_and_unpaginated_list_paths() {
+    let db = Db::open(":memory:").unwrap();
+    assert!(db.get_decision(999_999).unwrap().is_none());
+    db.get_or_create_agent("plain-a").unwrap();
+    // Legacy unfiltered entrypoint delegates correctly.
+    let all = db.list_agents_paginated(100, 0).unwrap();
+    assert!(all.iter().any(|a| a.agent_id == "plain-a"));
+}
+
+#[test]
+fn hostile_bytes_in_text_fields_never_panic() {
+    // rusqlite binds TEXT with explicit length, so NUL/control/unicode bytes
+    // are stored, never rejected and never panic the server. The ROLLBACK
+    // arms in record_decision/try_reserve therefore only trigger on genuine
+    // I/O or corruption failures (not reachable via input); this test pins
+    // the no-panic behavior for hostile input instead.
+    let db = Db::open(":memory:").unwrap();
+    db.record_decision("/v1/x\0y\x7f\u{1f600}", "ALLOW", "r\0", "{}")
+        .unwrap();
+    assert!(db.verify_chain().unwrap());
+    assert!(db.try_reserve_order("mnd\0x", "n\0y", 1).unwrap());
+    let (oid, status) = db.get_order_status("mnd\0x").unwrap().unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(oid, "__PENDING__");
+}
+
+#[test]
 fn rollback_nonce_allows_retry() {
     let db = Db::open(":memory:").unwrap();
     let nonce = "n_test_rollback";
