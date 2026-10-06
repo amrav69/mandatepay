@@ -868,11 +868,14 @@ impl Db {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         if let Some(needle) = filtered {
-            // Use LIKE with ESCAPE to handle % and _ safely; lowercase comparison for case-insensitive.
+            // Use LIKE with ESCAPE '\' to handle \, % and _ safely (backslash
+            // first, or the escapes themselves become wildcards); lowercase
+            // comparison for case-insensitive.
             let pattern = format!(
                 "%{}%",
                 needle
                     .to_lowercase()
+                    .replace('\\', "\\\\")
                     .replace('%', "\\%")
                     .replace('_', "\\_")
             );

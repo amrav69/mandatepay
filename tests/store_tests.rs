@@ -201,6 +201,26 @@ fn m5_pagination_filters_in_sql_not_memory() {
 }
 
 #[test]
+fn like_escape_treats_backslash_percent_underscore_literally() {
+    let db = Db::open(":memory:").unwrap();
+    // Agent whose id contains all three LIKE metacharacters.
+    db.get_or_create_agent("combo\\%_mix").unwrap();
+    // Decoys that an unescaped pattern would over-match:
+    // backslash + arbitrary char + underscore (matches \%_ if \ is not escaped).
+    db.get_or_create_agent("combo\\Q_mix").unwrap();
+    db.get_or_create_agent("combo_plain_mix").unwrap();
+    let page = db
+        .list_agents_paginated_filtered(100, 0, Some("\\%_"))
+        .unwrap();
+    let ids: Vec<&str> = page.iter().map(|a| a.agent_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["combo\\%_mix"],
+        "LIKE metacharacters must match literally, without over-matching"
+    );
+}
+
+#[test]
 fn h8_update_agent_atomic_partial_updates() {
     let db = Db::open(":memory:").unwrap();
     db.get_or_create_agent("atomic-agent").unwrap();
