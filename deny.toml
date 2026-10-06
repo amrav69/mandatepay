@@ -1,35 +1,29 @@
+# cargo-deny 0.20 configuration. The pre-0.18 keys
+# (advisories.vulnerability/unmaintained/yanked/notice, graph table-form
+# targets) no longer parse; this file tracks the current schema.
 [graph]
-targets = [{ triple = "x86_64-unknown-linux-gnu" }]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+ignore = []
 
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"
 
+# Allowlist is intentionally minimal: an unlisted license fails the check
+# (fail-closed) so new dependencies get explicit review.
 [licenses]
-unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
-    "MPL-2.0",
     "CC0-1.0",
     "Zlib",
     "BSL-1.0",
 ]
-
-[[bans.skip]]
-name = "h2"
-version = "0.4.12"
 
 [sources]
 unknown-registry = "warn"
