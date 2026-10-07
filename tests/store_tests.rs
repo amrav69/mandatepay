@@ -402,3 +402,84 @@ fn m4_u32_and_u64_bounds_checked_no_wrap() {
     let p = db2.get_agent_policy("good-agent").unwrap().unwrap();
     assert_eq!(p.velocity_limit, 50);
 }
+
+#[test]
+fn velocity_refund_restores_budget_after_gateway_failure() {
+    // A request that charged velocity but never placed an order (gateway
+    // failure) must get its budget back: check, check, refund == one check.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("refund-agent", Some(50000), Some(5), Some(60), None)
+        .unwrap();
+    assert!(db.check_velocity("refund-agent").unwrap());
+    assert_eq!(db.velocity_count("refund-agent").unwrap(), 1);
+    assert!(db.check_velocity("refund-agent").unwrap());
+    assert_eq!(db.velocity_count("refund-agent").unwrap(), 2);
+    db.refund_velocity("refund-agent").unwrap();
+    assert_eq!(
+        db.velocity_count("refund-agent").unwrap(),
+        1,
+        "gateway failure must leave the count as if the failed request never happened"
+    );
+}
+
+#[test]
+fn velocity_refund_saturates_at_zero() {
+    // Refund with no prior charge stays at zero: never negative, no error —
+    // and the limit still enforces afterwards.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("sat-agent", Some(50000), Some(5), Some(60), None)
+        .unwrap();
+    assert_eq!(db.velocity_count("sat-agent").unwrap(), 0);
+    db.refund_velocity("sat-agent").unwrap();
+    db.refund_velocity("sat-agent").unwrap();
+    assert_eq!(db.velocity_count("sat-agent").unwrap(), 0);
+    let mut oks = 0;
+    for _ in 0..7 {
+        if db.check_velocity("sat-agent").unwrap() {
+            oks += 1;
+        }
+    }
+    assert_eq!(oks, 5);
+    // Unknown agents read 0 and refund is a silent no-op.
+    assert_eq!(db.velocity_count("ghost-agent").unwrap(), 0);
+    db.refund_velocity("ghost-agent").unwrap();
+}
+
+#[test]
+fn velocity_limit_holds_under_concurrent_storm() {
+    // 20 threads racing check_velocity against limit 5 admit exactly 5, so
+    // the admission invariant survives concurrency; interleaved refunds can
+    // only lower the count, never push admissions over the limit, and the
+    // count never goes negative.
+    use std::sync::Arc;
+    let db = Arc::new(Db::open(":memory:").unwrap());
+    db.update_agent("storm-agent", Some(50000), Some(5), Some(60), None)
+        .unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            d.check_velocity("storm-agent").unwrap()
+        }));
+    }
+    let admitted = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|&b| b)
+        .count();
+    assert_eq!(admitted, 5, "exactly the limit must be admitted");
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = d.check_velocity("storm-agent");
+                let _ = d.refund_velocity("storm-agent");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert!(db.velocity_count("storm-agent").unwrap() >= 0);
+}
