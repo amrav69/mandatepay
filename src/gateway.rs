@@ -117,6 +117,7 @@ impl Default for TestGate {
 pub enum Gateway {
     Mock {
         store: Arc<Mutex<HashMap<String, Vec<GatewayOrder>>>>,
+        creates: Arc<std::sync::atomic::AtomicU64>,
     },
     Razorpay {
         key_id: String,
@@ -210,6 +211,16 @@ impl Gateway {
     pub fn mock() -> Self {
         Gateway::Mock {
             store: Arc::new(Mutex::new(HashMap::new())),
+            creates: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Total `create_order` calls on a Mock instance (for reclaim tests).
+    /// Returns 0 for non-Mock gateways.
+    pub fn mock_create_count(&self) -> u64 {
+        match self {
+            Gateway::Mock { creates, .. } => creates.load(std::sync::atomic::Ordering::SeqCst),
+            _ => 0,
         }
     }
 
@@ -295,8 +306,9 @@ impl Gateway {
         amount_minor: u64,
     ) -> Result<GatewayOrder, GatewayError> {
         match self {
-            Gateway::Mock { store } => {
+            Gateway::Mock { store, creates } => {
                 check_receipt(&mandate.mandate_id)?;
+                creates.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let order = GatewayOrder {
                     id: try_new_token("order_mock_", 9)
                         .map_err(|e| GatewayError::Internal(e.to_string()))?,
@@ -420,7 +432,7 @@ impl Gateway {
     ) -> Result<Option<GatewayOrder>, GatewayError> {
         check_receipt(mandate_id)?;
         match self {
-            Gateway::Mock { store } => {
+            Gateway::Mock { store, .. } => {
                 let guard = store
                     .lock()
                     .map_err(|e| GatewayError::Internal(format!("mock store poisoned: {e}")))?;

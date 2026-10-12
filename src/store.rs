@@ -620,14 +620,34 @@ impl Db {
     }
 
     /// C4: atomic pending reservation claimed *before* gateway call.
-    /// Returns true if reservation succeeded (we own the mandate), false if another request already holds it.
-    // TODO(phase3): a stale pending row (crash between reserve and
-    // finalize/clear) blocks its mandate_id forever. That failure mode is
-    // fail-closed (it cannot double-charge) but needs reclaim logic, and
-    // reclaim must not ship without a gateway idempotency key.
+    /// Returns true if reservation succeeded (we own the mandate), false if
+    /// another request already holds it.
+    ///
+    /// Reclaim contract (phase3, stale-pending): a `pending` row older than
+    /// `PENDING_TTL_SECS` is NEVER reclaimed blindly. The checkout flow, on
+    /// seeing a stale pending row for this `mandate_id`, first calls
+    /// `gateway.find_order_by_receipt(mandate_id)`: `Some(order)` adopts it
+    /// (finalize, no new order); `None` reclaims via compare-and-swap on
+    /// `reserved_at` (only the CAS winner proceeds to create); `Err` or
+    /// `DuplicateReceipt` leaves the row pending and returns a retryable 503
+    /// with no order created. Fresh (non-stale) rows are never stolen. Only
+    /// an identical-mandate retry (same `mandate_id` + same `nonce` + same
+    /// `amount`) may be let past the nonce claim; a DIFFERENT mandate reusing
+    /// a consumed nonce is always rejected and its nonce row is never freed.
     pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
         self.try_reserve_order_with_nonce_at(mandate_id, amount, "", unix_now())
             .map(|(reserved, _)| reserved)
+    }
+
+    /// Same as `try_reserve_order` but records the owner `nonce` so a later
+    /// identical retry can prove ownership. Checkout must use this variant.
+    pub fn try_reserve_with_nonce(
+        &self,
+        mandate_id: &str,
+        amount: u64,
+        nonce: &str,
+    ) -> rusqlite::Result<(bool, Option<PendingInfo>)> {
+        self.try_reserve_order_with_nonce_at(mandate_id, amount, nonce, unix_now())
     }
 
     /// Reservation with explicit owner nonce and clock (tests use this to
@@ -697,6 +717,32 @@ impl Db {
     /// reclaim — the caller must still run `find_order_by_receipt` first.
     pub fn is_pending_stale(info: &PendingInfo, now: u64) -> bool {
         info.status == "pending" && (now as i64 - info.reserved_at) >= PENDING_TTL_SECS as i64
+    }
+
+    /// Atomically reclaim a stale pending row: retake it only if it still
+    /// carries `expected_reserved_at` (compare-and-swap). The mutex is held
+    /// for the whole check-and-update with no `.await` in between, so exactly
+    /// one concurrent retry wins. Returns true on win. Call only after a
+    /// `None` from `find_order_by_receipt` for an identical retry.
+    pub fn cas_reclaim_pending(
+        &self,
+        mandate_id: &str,
+        expected_reserved_at: i64,
+        amount: u64,
+        nonce: &str,
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        if amount > i64::MAX as u64 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "amount exceeds i64::MAX".into(),
+            ));
+        }
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = conn.execute(
+            "UPDATE orders SET order_id = '__PENDING__', amount = ?1, created_at = ?2, reserved_at = ?2, nonce = ?3 WHERE mandate_id = ?4 AND status = 'pending' AND reserved_at = ?5",
+            params![amount as i64, now as i64, nonce, mandate_id, expected_reserved_at],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn finalize_reserved_order(

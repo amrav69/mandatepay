@@ -15,11 +15,23 @@ use validator::Validate;
 use crate::{
     auth::{extract_api_key, verify_api_key},
     error::AppError,
-    gateway::Gateway,
+    gateway::{Gateway, GatewayError},
     mandates::{self, Authority, Mandate},
     policy::{self, Decision},
     store::Db,
 };
+
+/// True for a duplicate-receipt failure from `create_order`: either the
+/// distinct `DuplicateReceipt` variant or a Razorpay 400 whose body names a
+/// duplicate receipt. Used to fall back to `find_order_by_receipt` + adopt
+/// after a reclaim race instead of rolling back and double-creating.
+fn is_duplicate_receipt_err(e: &GatewayError) -> bool {
+    match e {
+        GatewayError::DuplicateReceipt(_) => true,
+        GatewayError::Api(msg) if msg.to_lowercase().contains("duplicate") => true,
+        _ => false,
+    }
+}
 
 /// Four different caps — similar names, different owners:
 /// - `Mandate.max_amount_minor`: per-mandate spend ceiling, signed by the authority.
@@ -348,6 +360,88 @@ pub async fn checkout(
         &state.db,
     );
 
+    // Stale-pending reclaim for an identical retry (same mandate_id + nonce +
+    // amount) whose original attempt crashed after reserving. evaluate() failed
+    // at the nonce claim, so we never reached reservation. Only the identical
+    // owner may proceed; a DIFFERENT mandate reusing a consumed nonce
+    // (different mandate_id, or nonce/amount mismatch) stays REJECT and its
+    // nonce row is never freed. A stale row is NEVER reclaimed blindly: we
+    // always call find_order_by_receipt first (no DB lock held across await).
+    let mut reclaimed_fresh = false;
+    if matches!(&decision, Decision::Reject { reason } if reason.contains("nonce already consumed"))
+    {
+        let now = mandates::unix_now();
+        if let Ok(Some(info)) = state.db.get_pending_info(&req.mandate.mandate_id) {
+            let identical = info.nonce == req.mandate.nonce && info.amount == req.amount_minor;
+            if identical && Db::is_pending_stale(&info, now) {
+                match state
+                    .gateway
+                    .find_order_by_receipt(&req.mandate.mandate_id)
+                    .await
+                {
+                    Ok(Some(order)) => {
+                        if order.amount == req.amount_minor {
+                            if let Err(e) = state
+                                .db
+                                .finalize_reserved_order(&req.mandate.mandate_id, &order.id)
+                            {
+                                tracing::error!(error = %e, mandate_id = %req.mandate.mandate_id, "failed to finalize adopted order after stale reclaim");
+                            }
+                            let payload = mandate_payload_json(&req.mandate)?;
+                            let adopt_reason = "reclaimed stale pending: adopted gateway order";
+                            state
+                                .db
+                                .record_decision("/v1/checkout", "ALLOW", adopt_reason, &payload)
+                                .map_err(|e| AppError::Internal(e.to_string()))?;
+                            return Ok(Json(DecisionResponse {
+                                decision: "ALLOW".into(),
+                                reason: adopt_reason.into(),
+                                order_id: Some(order.id),
+                                gateway: state.gateway.label().into(),
+                            }));
+                        }
+                        // Amount mismatch on adopt: stay with the nonce REJECT below.
+                    }
+                    Ok(None) => {
+                        match state.db.cas_reclaim_pending(
+                            &req.mandate.mandate_id,
+                            info.reserved_at,
+                            req.amount_minor,
+                            &req.mandate.nonce,
+                            now,
+                        ) {
+                            Ok(true) => {
+                                // Won the CAS: we now own a fresh pending row
+                                // for the identical retry. The original nonce
+                                // row (same value) stays claimed by us and the
+                                // original velocity charge stays; do not
+                                // recharge either.
+                                reclaimed_fresh = true;
+                                decision = Decision::Allow {
+                                    reason: "signature, scope, merchant, amount, expiry and replay checks passed (stale pending reclaimed)".into(),
+                                };
+                            }
+                            Ok(false) => {
+                                // Lost to a concurrent identical retry; its
+                                // row is now fresh. Stay REJECT (no nonce free,
+                                // no velocity touch — the shared nonce row
+                                // belongs to the winner too).
+                            }
+                            Err(e) => return Err(AppError::Internal(e.to_string())),
+                        }
+                    }
+                    Err(_) => {
+                        // Lookup error or DuplicateReceipt: leave pending,
+                        // retryable 503, create NO order, free nothing.
+                        return Err(AppError::ServiceUnavailable(
+                            "gateway lookup unavailable, retry later".into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // Velocity: if policy Allow but velocity exceeded, override to Reject.
     // Nonce was already claimed inside evaluate() -> rollback so the mandate remains retryable
     // after the velocity window. This is intentional: velocity is a rate limit, not a mandate
@@ -356,8 +450,10 @@ pub async fn checkout(
     // rejections are retryable; gateway failures also rollback for same reason.
     // Keep the exact window charged so later refunds (gateway/duplicate) hit
     // that row even if the clock rolled to a new window in between.
+    // A reclaimed identical retry keeps its original velocity charge and must
+    // not be charged a second time.
     let mut velocity_window: Option<u64> = None;
-    if matches!(decision, Decision::Allow { .. }) {
+    if matches!(decision, Decision::Allow { .. }) && !reclaimed_fresh {
         let outcome = state.db.check_velocity(agent_id)?;
         velocity_window = Some(outcome.window_start);
         if !outcome.allowed {
@@ -411,9 +507,18 @@ pub async fn checkout(
             // C4: atomic PENDING reservation *before* gateway call.
             // INSERT OR IGNORE with PRIMARY KEY on mandate_id guarantees only one concurrent
             // writer wins the reservation; losers see `false` and must not call gateway.
-            let reserved = state
-                .db
-                .try_reserve_order(&req.mandate.mandate_id, req.amount_minor)?;
+            // The owner nonce is stored so a later identical retry can prove
+            // ownership during stale reclaim (see above). A reclaimed retry
+            // already owns a fresh pending row via CAS and skips this step.
+            let (reserved, _) = if reclaimed_fresh {
+                (true, None)
+            } else {
+                state.db.try_reserve_with_nonce(
+                    &req.mandate.mandate_id,
+                    req.amount_minor,
+                    &req.mandate.nonce,
+                )?
+            };
             if !reserved {
                 // Lost reservation: someone else owns this mandate_id. If they already completed,
                 // return their cached order as idempotent replay (only if amount matches);
@@ -516,6 +621,7 @@ pub async fn checkout(
                 let task_window = velocity_window;
                 let task_payload = mandate_payload_json(&req.mandate)?;
                 let task_reason_base = reason.clone();
+                let task_reclaimed = reclaimed_fresh;
                 let join = tokio::spawn(async move {
                     let mut guard = PendingGuard {
                         state: Arc::clone(&task_state),
@@ -551,6 +657,38 @@ pub async fn checkout(
                             (task_label.to_string(), decision_reason, Some(order.id))
                         }
                         Err(e) => {
+                            // Reclaim race: our create hit a duplicate receipt
+                            // because the gateway already holds an order for
+                            // this receipt (concurrent winner). Fall back to
+                            // find + adopt instead of rolling back.
+                            if task_reclaimed
+                                && is_duplicate_receipt_err(&e)
+                                && let Ok(Some(found)) = task_state
+                                    .gateway
+                                    .find_order_by_receipt(&task_mandate_id)
+                                    .await
+                            {
+                                if let Err(fin_err) = task_state
+                                    .db
+                                    .finalize_reserved_order(&task_mandate_id, &found.id)
+                                {
+                                    tracing::error!(error = %fin_err, mandate_id = %task_mandate_id, "failed to finalize adopted order after duplicate create");
+                                }
+                                guard.armed = false;
+                                let task_label = "ALLOW";
+                                let decision_reason = format!(
+                                    "{task_reason_base} (reclaimed stale pending: adopted gateway order)"
+                                );
+                                if let Err(record_err) = task_state.db.record_decision(
+                                    "/v1/checkout",
+                                    task_label,
+                                    &decision_reason,
+                                    &task_payload,
+                                ) {
+                                    tracing::error!(error = %record_err, mandate_id = %task_mandate_id, "failed to record decision after duplicate adopt");
+                                }
+                                return (task_label.to_string(), decision_reason, Some(found.id));
+                            }
                             if let Err(rollback_err) =
                                 task_state.db.clear_pending_order(&task_mandate_id)
                             {
@@ -561,6 +699,8 @@ pub async fn checkout(
                             }
                             // Velocity was charged before the gateway call; the
                             // order never happened, so refund the exact window charged.
+                            // Reclaimed retries never charged (original charge
+                            // stays), so `task_window` is None and this is a no-op.
                             if let Some(window_start) = task_window
                                 && let Err(rollback_err) =
                                     task_state.db.refund_velocity(&task_agent, window_start)

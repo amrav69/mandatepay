@@ -14,6 +14,8 @@ pub enum AppError {
     Forbidden(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("temporarily unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -31,6 +33,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         tracing::error!(error_code = %status.as_u16(), message = %self, "request error");
