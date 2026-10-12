@@ -28,5 +28,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 validator = { version = "0.21.0", features = ["derive"] }
 
 [dev-dependencies]
+proptest = "1.11.0"
 tempfile = "3.27.0"
 tower = "0.5.3"
