@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fallible randomness/time/token paths (no `expect` panics on money paths), integer `i64` paise with checked casts, per-agent `X-API-Key`/`Bearer` + master key separation, generic policy errors (no cap/merchant oracle), `orders` idempotency cache with amount match
 
 ## [Unreleased]
+- Phase3 cancel-safety: winner-path checkout decision recorded inside the spawned gateway task (exactly one audit row on disconnect, `JoinHandle` carries result, no DB mutex across `.await`); deterministic `TestGate` replaces sleep timing
+- Receipt-keyed gateway lookup: `create_order` always sends `receipt = mandate_id` (+ `notes.mandate_id`); new `find_order_by_receipt` (Razorpay `GET /v1/orders?receipt=&count=2`, Mock receipt-keyed store, `DuplicateReceipt` never picks silently); `MAX_RECEIPT_LEN = 40` guard
+- Stale-pending reclaim: `orders.reserved_at` + `orders.nonce` migration v4 (`user_version = 4`, `PENDING_TTL_SECS = 300`); stale rows never reclaimed blindly — `find` hit adopts (no new order), miss CAS-reclaims then creates, error/duplicate leaves pending with retryable 503; fresh rows never stolen; identical-mandate-only replay preserved
 - Fix M9: `Mutex` poisoning handled via `unwrap_or_else(|e| e.into_inner())` on ~17 lock sites (`src/store.rs`)
 - Fix C2: SQLite migration via `PRAGMA user_version` + `ALTER TABLE ADD COLUMN` for `audit_hash`/`prev_hash`/`orders.status` (no more 500 on existing DB after upgrade)
 - Fix H1: `record_decision` wrapped in `BEGIN IMMEDIATE` transaction to prevent hash-chain fork under concurrent writes

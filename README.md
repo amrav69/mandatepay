@@ -52,9 +52,9 @@ mandatepay/
 │   ├── mandates.rs        # Mandate schema, canonical bytes, Ed25519 sign/verify
 │   ├── policy.rs          # 13-gate evaluation: version/action/currency/max>0/expires>issued/ids/issued-leeway/expiry/sig/allowlist/amount>0/amount<=cap/nonce
 │   ├── store.rs           # SQLite ledger: decisions + nonces + orders + agents + velocity
-│   ├── gateway.rs         # Gateway seam: Mock ↔ Razorpay test-mode (basic auth /v1/orders)
+│   ├── gateway.rs         # Gateway seam: Mock (receipt-keyed store + create counter) ↔ Razorpay test-mode (basic auth /v1/orders, receipt=mandate_id, find by receipt)
 │   ├── auth.rs            # Master key + per-agent key extraction/verification
-│   ├── error.rs           # Typed HTTP errors (400/401/403/404/500)
+│   ├── error.rs           # Typed HTTP errors (400/401/403/404/500/503)
 │   ├── app.rs             # Axum handlers + router (agent-key + master-key zones)
 │   ├── lib.rs             # Crate root
 │   ├── main.rs            # Boot: seed, gateway, ledger, master key, bind
@@ -64,7 +64,7 @@ mandatepay/
 │       └── eval/          # 10-vector HTTP attack suite (main.rs + vectors.rs)
 ├── dashboard/index.html   # Live decision stream, polling every 2s, replay viewer
 ├── gen_card.py            # Generates mandate_card.svg (ILLUSTRATIVE diagram, not eval output)
-├── tests/                 # mandates/store/common/eval_issue/eval_checkout/logging/fresh_clone
+├── tests/                 # mandates/store/common/eval_issue/eval_checkout/logging/fresh_clone/adversarial/cancel_safety/concurrency/failure_injection/property/stale_reclaim
 └── .github/workflows/ci.yml  # Pinned SHAs: fmt → clippy → tests → coverage → audit → live suite
 ```
 

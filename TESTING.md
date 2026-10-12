@@ -4,7 +4,7 @@ MandatePay has a comprehensive test suite covering cryptographic verification, p
 
 ## Running Tests
 
-To run the full test suite (79 tests as of this commit: 14 unit + 1 agent + 17 checkout + 11 issue + 2 fresh + 2 logging + 15 mandates + 17 store):
+To run the full test suite (125 tests: 22 lib + 1 agent + 4 adversarial + 3 cancel-safety + 3 concurrency + 17 checkout + 11 issue + 3 failure-injection + 2 fresh + 2 logging + 16 mandates + 8 property + 6 stale-reclaim + 27 store):
 
 ```bash
 cargo test
@@ -37,6 +37,14 @@ Our tests cover the following vectors:
     - 404 vs 400 correctness (unknown sort/order → 400)
     - Agent CRUD, rotation, search/pagination/sort, velocity rollback, idempotency amount-mismatch
     - Metrics alias (`/v1/metrics` == `/v1/stats`) and logging boot
+    - Cancel-safety: winner-path decision recorded inside the spawned gateway
+      task (disconnect still leaves exactly one audit row, deterministic `TestGate`)
+    - Stale-pending reclaim: fresh blocks duplicates; stale + gateway-hit adopts
+      (1 create); stale + miss reclaims via CAS (1 create); lookup error stays
+      pending with 503 and 0 creates; concurrent retries single-winner;
+      different-mandate same-nonce stays replay
+    - Failure injection (`Failing` gateway): error/timeout/malformed leave no
+      trace and stay retryable; panic maps to generic 500 with rollback
 
 ## Code Coverage
 
