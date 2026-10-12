@@ -1,5 +1,6 @@
 use crate::mandates::{Mandate, try_new_token, unix_now};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
@@ -50,6 +51,32 @@ pub enum FailureMode {
     Panic,
 }
 
+/// Deterministic synchronization for cancel-safety tests (phase3).
+/// `entered` fires when the gateway call starts; the test waits for it before
+/// dropping the handler, then fires `release` to let the gateway complete.
+/// Both are [`tokio::sync::Notify`] so a notify before the waiter still
+/// leaves a permit (no missed wakeup for the single-use per-test gate).
+#[derive(Debug, Clone)]
+pub struct TestGate {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
+impl TestGate {
+    pub fn new() -> Self {
+        Self {
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl Default for TestGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub enum Gateway {
     Mock,
     Razorpay {
@@ -60,8 +87,13 @@ pub enum Gateway {
     /// Test-only double. Never returned by [`Gateway::from_env`] and never
     /// constructed in `main.rs`/`app.rs`; exercises the checkout failure path
     /// (pending/nonce/velocity rollback) in integration tests.
+    /// `gate` is `None` for legacy sleep-based modes and `Some` for
+    /// deterministic cancel-safety tests: when present, `Delay` (success) and
+    /// `Timeout` (failure) signal `entered`, await `release`, then complete
+    /// without any fixed sleep.
     Failing {
         mode: FailureMode,
+        gate: Option<Arc<TestGate>>,
     },
 }
 
@@ -87,7 +119,18 @@ impl Gateway {
     /// Production code must use [`Gateway::from_env`], which never returns
     /// `Failing` (see `from_env` below and `main.rs` which only calls it).
     pub fn failing_for_tests(mode: FailureMode) -> Self {
-        Gateway::Failing { mode }
+        Gateway::Failing { mode, gate: None }
+    }
+
+    /// Deterministic variant for cancel-safety tests: `Delay` and `Timeout`
+    /// modes signal `gate.entered` on entry and await `gate.release`
+    /// instead of sleeping, so tests can drop the handler mid-await without
+    /// any fixed-duration race.
+    pub fn failing_gated_for_tests(mode: FailureMode, gate: Arc<TestGate>) -> Self {
+        Gateway::Failing {
+            mode,
+            gate: Some(gate),
+        }
     }
 
     pub fn from_env() -> Self {
@@ -197,15 +240,29 @@ impl Gateway {
                     live: true,
                 })
             }
-            Gateway::Failing { mode } => match mode {
+            Gateway::Failing { mode, gate } => match mode {
                 FailureMode::Error => Err(GatewayError::Api("injected gateway failure".into())),
                 FailureMode::Timeout => {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if let Some(g) = gate {
+                        // Deterministic cancel-safety path: signal entry, wait
+                        // for the test to release. No fixed sleep.
+                        g.entered.notify_one();
+                        g.release.notified().await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
                     Err(GatewayError::Http("injected gateway timeout".into()))
                 }
                 FailureMode::MalformedBody => parse_order_body("{not an order}"),
                 FailureMode::Delay => {
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    if let Some(g) = gate {
+                        // Deterministic cancel-safety path: signal entry, wait
+                        // for the test to release. No fixed sleep.
+                        g.entered.notify_one();
+                        g.release.notified().await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    }
                     Ok(GatewayOrder {
                         id: try_new_token("order_mock_", 9)
                             .map_err(|e| GatewayError::Internal(e.to_string()))?,

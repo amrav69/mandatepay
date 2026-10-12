@@ -376,6 +376,10 @@ pub async fn checkout(
     };
 
     let mut order_id = None;
+    // Winner-path decision is recorded inside the spawned gateway task (not
+    // here) so a client disconnect mid-await still leaves exactly one audit
+    // row. When true, the final `record_decision` below must be skipped.
+    let mut winner_decision_recorded = false;
     if matches!(decision, Decision::Allow { .. }) {
         // Second cache check: another concurrent Allow may have just completed and cached.
         // Re-validate stateless gates + caps (policy may have changed between evaluate
@@ -473,12 +477,17 @@ pub async fn checkout(
                     reason = "duplicate mandate_id: order already in flight".into();
                 }
             } else {
-                // Phase3 cancel-safety: run gateway + finalize/rollback in a
-                // spawned task so cleanup always runs even if the client
-                // disconnects and axum drops this handler future mid-await.
-                // The task owns a drop-guard that rolls back pending/nonce/
-                // velocity on panic; normal paths disarm it after explicit
-                // cleanup. No DB mutex is held across the gateway `.await`.
+                // Phase3 cancel-safety: run gateway + finalize/rollback +
+                // record_decision in a spawned task so a decision row is
+                // written for every outcome (success and gateway failure)
+                // even when the client disconnects and axum drops this
+                // handler future mid-await. The task owns a drop-guard that
+                // rolls back pending/nonce/velocity on panic; normal paths
+                // disarm it after explicit cleanup. No DB mutex is held
+                // across the gateway `.await`: the mutex is only locked
+                // inside each short synchronous `Db` call before/after it.
+                // The JoinHandle carries (label, reason, order_id) back so
+                // the handler can respond without a second DB write.
                 struct PendingGuard {
                     state: Arc<AppState>,
                     mandate_id: String,
@@ -505,6 +514,8 @@ pub async fn checkout(
                 let task_nonce = req.mandate.nonce.clone();
                 let task_agent = agent_id.to_string();
                 let task_window = velocity_window;
+                let task_payload = mandate_payload_json(&req.mandate)?;
+                let task_reason_base = reason.clone();
                 let join = tokio::spawn(async move {
                     let mut guard = PendingGuard {
                         state: Arc::clone(&task_state),
@@ -527,7 +538,17 @@ pub async fn checkout(
                                 tracing::error!(error = %e, mandate_id = %task_mandate_id, "failed to finalize reserved order after gateway success");
                             }
                             guard.armed = false;
-                            Ok(order.id)
+                            let task_label = "ALLOW";
+                            let decision_reason = task_reason_base;
+                            if let Err(e) = task_state.db.record_decision(
+                                "/v1/checkout",
+                                task_label,
+                                &decision_reason,
+                                &task_payload,
+                            ) {
+                                tracing::error!(error = %e, mandate_id = %task_mandate_id, "failed to record decision after gateway success");
+                            }
+                            (task_label.to_string(), decision_reason, Some(order.id))
                         }
                         Err(e) => {
                             if let Err(rollback_err) =
@@ -547,17 +568,30 @@ pub async fn checkout(
                                 tracing::error!(error = %rollback_err, "failed to refund velocity after gateway failure");
                             }
                             guard.armed = false;
-                            Err(e.to_string())
+                            let task_label = "REJECT";
+                            let decision_reason = format!("{task_reason_base}; gateway: {e}");
+                            if let Err(record_err) = task_state.db.record_decision(
+                                "/v1/checkout",
+                                task_label,
+                                &decision_reason,
+                                &task_payload,
+                            ) {
+                                tracing::error!(error = %record_err, mandate_id = %task_mandate_id, "failed to record decision after gateway failure");
+                            }
+                            (task_label.to_string(), decision_reason, None)
                         }
                     }
                 });
                 match join.await {
-                    Ok(Ok(id)) => {
-                        order_id = Some(id);
-                    }
-                    Ok(Err(e)) => {
-                        reason = format!("{reason}; gateway: {e}");
-                        label = "REJECT";
+                    Ok((task_label, task_reason, task_order)) => {
+                        if task_label == "ALLOW" {
+                            label = "ALLOW";
+                        } else {
+                            label = "REJECT";
+                        }
+                        reason = task_reason;
+                        order_id = task_order;
+                        winner_decision_recorded = true;
                     }
                     Err(_) => {
                         // Spawned task panicked; its drop-guard already rolled
@@ -570,15 +604,19 @@ pub async fn checkout(
         }
     }
 
-    state
-        .db
-        .record_decision(
-            "/v1/checkout",
-            label,
-            &reason,
-            &mandate_payload_json(&req.mandate)?,
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Winner path already recorded its decision inside the spawned task
+    // (cancel-safe); all other paths record here exactly once.
+    if !winner_decision_recorded {
+        state
+            .db
+            .record_decision(
+                "/v1/checkout",
+                label,
+                &reason,
+                &mandate_payload_json(&req.mandate)?,
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
 
     Ok(Json(DecisionResponse {
         decision: label.into(),
