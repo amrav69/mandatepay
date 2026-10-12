@@ -725,6 +725,71 @@ impl Db {
         Ok(count <= velocity_limit)
     }
 
+    /// Current velocity count for the agent's active window (0 if none).
+    /// Read-only: never creates agent or window rows.
+    pub fn velocity_count(&self, agent_id: &str) -> rusqlite::Result<i64> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let window_secs: i64 = match conn.query_row(
+            "SELECT velocity_window_secs FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        if window_secs <= 0 {
+            return Ok(0);
+        }
+        let window_secs_u64 = window_secs as u64;
+        if window_secs_u64 > MAX_VELOCITY_WINDOW_SECS {
+            return Ok(0);
+        }
+        let now = unix_now();
+        let window_start = now - (now % window_secs_u64);
+        let count: i64 = conn
+            .query_row(
+                "SELECT count FROM agent_velocity WHERE agent_id = ?1 AND window_start = ?2",
+                params![agent_id, window_start as i64],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count.max(0))
+    }
+
+    /// Compensating decrement for a velocity slot charged to a request that
+    /// ultimately did not place an order (gateway failure, duplicate loser).
+    /// Saturates at zero and only ever lowers the count, so it cannot let
+    /// concurrent requests exceed the limit: admission in `check_velocity`
+    /// still increments-then-compares atomically under the mutex. Unknown
+    /// agents and non-positive windows are silent no-ops.
+    pub fn refund_velocity(&self, agent_id: &str) -> rusqlite::Result<()> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let window_secs: i64 = match conn.query_row(
+            "SELECT velocity_window_secs FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if window_secs <= 0 {
+            return Ok(());
+        }
+        let window_secs_u64 = window_secs as u64;
+        if window_secs_u64 > MAX_VELOCITY_WINDOW_SECS {
+            return Ok(());
+        }
+        let now = unix_now();
+        let window_start = now - (now % window_secs_u64);
+        conn.execute(
+            "UPDATE agent_velocity SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END WHERE agent_id = ?1 AND window_start = ?2",
+            params![agent_id, window_start as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn get_agent_policy(&self, agent_id: &str) -> rusqlite::Result<Option<AgentPolicy>> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(

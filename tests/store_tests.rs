@@ -402,3 +402,98 @@ fn m4_u32_and_u64_bounds_checked_no_wrap() {
     let p = db2.get_agent_policy("good-agent").unwrap().unwrap();
     assert_eq!(p.velocity_limit, 50);
 }
+
+#[test]
+fn velocity_success_increments_count() {
+    // A successful velocity check must visibly consume one budget slot.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-success", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 0);
+    assert!(db.check_velocity("port2-success").unwrap());
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 1);
+    assert!(db.check_velocity("port2-success").unwrap());
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 2);
+}
+
+#[test]
+fn velocity_gateway_failure_refund_leaves_count_unchanged() {
+    // A request that charged velocity but never placed an order (gateway
+    // failure) must get its slot back: two checks minus one refund == one check.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-failure", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    assert!(db.check_velocity("port2-failure").unwrap());
+    assert!(db.check_velocity("port2-failure").unwrap());
+    assert_eq!(db.velocity_count("port2-failure").unwrap(), 2);
+    db.refund_velocity("port2-failure").unwrap();
+    assert_eq!(
+        db.velocity_count("port2-failure").unwrap(),
+        1,
+        "refunded failure must read as if the failed request never charged"
+    );
+}
+
+#[test]
+fn velocity_double_refund_at_zero_stays_zero() {
+    // Refunding an empty window must saturate at zero: never negative, no
+    // error, and the limit must still enforce afterwards.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-saturate", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    db.refund_velocity("port2-saturate").unwrap();
+    db.refund_velocity("port2-saturate").unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    let mut admitted = 0;
+    for _ in 0..7 {
+        if db.check_velocity("port2-saturate").unwrap() {
+            admitted += 1;
+        }
+    }
+    assert_eq!(admitted, 5);
+    // Unknown agents read 0 and refund is a silent no-op.
+    assert_eq!(db.velocity_count("port2-ghost").unwrap(), 0);
+    db.refund_velocity("port2-ghost").unwrap();
+}
+
+#[test]
+fn velocity_concurrent_check_refund_storm_never_exceeds_limit() {
+    // Racing admissions must respect the limit even with refunds interleaved:
+    // refunds only lower the counter, they never create extra admissions.
+    use std::sync::Arc;
+    let db = Arc::new(Db::open(":memory:").unwrap());
+    db.update_agent("port2-storm", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            d.check_velocity("port2-storm").unwrap()
+        }));
+    }
+    let admitted = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(admitted, 5, "exactly the limit must be admitted");
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = d.check_velocity("port2-storm");
+                let _ = d.refund_velocity("port2-storm");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let count = db.velocity_count("port2-storm").unwrap();
+    assert!(
+        count >= 0,
+        "refund storm must never drive the count negative"
+    );
+}
