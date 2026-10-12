@@ -99,6 +99,21 @@ pub fn parse_max_cap() -> u64 {
     }
 }
 
+/// Background prune cadence (`MANDATEPAY_PRUNE_INTERVAL_SECS`, default hourly).
+/// Garbage or zero falls back to `DEFAULT_PRUNE_INTERVAL_SECS` with a warning.
+pub fn parse_prune_interval_secs() -> u64 {
+    match std::env::var("MANDATEPAY_PRUNE_INTERVAL_SECS") {
+        Ok(v) if !v.trim().is_empty() => match v.trim().parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(value = %v, "MANDATEPAY_PRUNE_INTERVAL_SECS invalid, falling back to 3600");
+                crate::store::DEFAULT_PRUNE_INTERVAL_SECS
+            }
+        },
+        _ => crate::store::DEFAULT_PRUNE_INTERVAL_SECS,
+    }
+}
+
 /// Master key (admin): gates `/v1/agents*` management endpoints only.
 /// Per-agent keys gate `POST /v1/mandates` and `POST /v1/checkout` via
 /// `require_agent_key` inside those handlers (needs the body `agent_id`).

@@ -1,4 +1,4 @@
-use mandatepay::store::Db;
+use mandatepay::store::{Db, NONCE_RETENTION_SECS, VELOCITY_RETENTION_SECS};
 
 #[test]
 fn agent_crud_and_velocity() {
@@ -530,5 +530,128 @@ fn velocity_refund_targets_charged_window_not_current_window() {
         db.velocity_count_at("port2b-roll", 180).unwrap(),
         1,
         "refund of A must leave window B untouched"
+    );
+}
+
+#[test]
+fn prune_expired_nonce_pruned_live_nonce_kept() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    let now = unix_now();
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 1_000);
+    assert!(db.try_claim_nonce_at("n_prune_old", old).unwrap());
+    assert!(db.try_claim_nonce_at("n_prune_live", now).unwrap());
+    let (nonces_deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(nonces_deleted, 1, "only the expired nonce must be pruned");
+    // Old nonce gone: reclaim succeeds. Live nonce kept: reclaim fails.
+    assert!(
+        db.try_claim_nonce("n_prune_old").unwrap(),
+        "expired nonce must have been pruned"
+    );
+    assert!(
+        !db.try_claim_nonce("n_prune_live").unwrap(),
+        "live nonce must never be pruned"
+    );
+}
+
+#[test]
+fn prune_replay_of_expired_mandate_still_rejected() {
+    use mandatepay::mandates::{Authority, Mandate, unix_now};
+    use mandatepay::policy::{Decision, evaluate};
+    let db = Db::open(":memory:").unwrap();
+    let auth = Authority::from_seed([7u8; 32]);
+    let now = unix_now();
+    let mandate = Mandate {
+        version: 1,
+        mandate_id: "mnd_prune_expired".into(),
+        agent_id: "prune-agent".into(),
+        merchant_id: "merchant-001".into(),
+        action: "create_order".into(),
+        currency: "INR".into(),
+        max_amount_minor: 5_000,
+        issued_at: now.saturating_sub(90_000),
+        expires_at: now.saturating_sub(3_600),
+        nonce: "n_prune_expired_replay".into(),
+    };
+    let sig = auth.sign(&mandate).unwrap();
+    let allow = vec!["merchant-001".to_string()];
+    // Claim its nonce as old, then prune it away.
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 5_000);
+    assert!(db.try_claim_nonce_at(&mandate.nonce, old).unwrap());
+    let (deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(deleted, 1);
+    assert!(
+        db.try_claim_nonce(&mandate.nonce).unwrap(),
+        "prune must have removed the old nonce"
+    );
+    db.rollback_nonce(&mandate.nonce).unwrap();
+    // Even though the nonce is gone, expiry rejects before any nonce claim.
+    let d = evaluate(&auth, &mandate, &sig, 1_000, &allow, &db);
+    match d {
+        Decision::Reject { reason } => assert!(
+            reason.contains("expired"),
+            "pruned-but-expired replay must still fail on expiry, got {reason}"
+        ),
+        Decision::Allow { .. } => panic!("expired mandate must never Allow after prune"),
+    }
+}
+
+#[test]
+fn prune_keeps_decisions_chain_and_orders() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    db.record_decision("/v1/checkout", "ALLOW", "ok", "{}")
+        .unwrap();
+    db.record_decision("/v1/checkout", "REJECT", "no", "{}")
+        .unwrap();
+    db.cache_order("mnd_prune_keep", "order_keep", 1_000)
+        .unwrap();
+    let now = unix_now();
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 1_000);
+    assert!(db.try_claim_nonce_at("n_prune_chain_old", old).unwrap());
+    let (nonces_deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(nonces_deleted, 1);
+    assert!(
+        db.verify_chain().unwrap(),
+        "decisions chain must verify after prune"
+    );
+    let stats = db.stats().unwrap();
+    assert_eq!(stats.total, 2, "decisions must never be pruned");
+    assert_eq!(
+        db.get_cached_order("mnd_prune_keep").unwrap().as_deref(),
+        Some("order_keep"),
+        "orders (idempotency) must never be pruned"
+    );
+}
+
+#[test]
+fn prune_stale_velocity_gone_live_velocity_kept() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port3-vel", Some(50_000), Some(50), Some(60), None)
+        .unwrap();
+    let now = unix_now();
+    let old_now = now.saturating_sub(VELOCITY_RETENTION_SECS + 10_000);
+    let old_outcome = db.check_velocity_at("port3-vel", old_now).unwrap();
+    let live_outcome = db.check_velocity_at("port3-vel", now).unwrap();
+    assert_ne!(old_outcome.window_start, live_outcome.window_start);
+    assert_eq!(
+        db.velocity_count_at("port3-vel", old_outcome.window_start)
+            .unwrap(),
+        1
+    );
+    let (_, velocity_deleted) = db.prune_expired_at(now).unwrap();
+    assert_eq!(velocity_deleted, 1, "only the stale window must be pruned");
+    assert_eq!(
+        db.velocity_count_at("port3-vel", old_outcome.window_start)
+            .unwrap(),
+        0,
+        "stale window row must be gone"
+    );
+    assert_eq!(
+        db.velocity_count_at("port3-vel", live_outcome.window_start)
+            .unwrap(),
+        1,
+        "live velocity row must be untouched"
     );
 }

@@ -42,6 +42,18 @@ pub const DEFAULT_VELOCITY_WINDOW_SECS: u64 = 60;
 /// computation toward window_start 0 and never reset in practice; beyond a week
 /// is a caller bug, rejected at both layers (C3 covers the i64::MAX wrap).
 pub const MAX_VELOCITY_WINDOW_SECS: u64 = 604_800;
+/// Longest mandate lifetime issuable (`ttl_secs` validator is 60..=86400).
+pub const MAX_MANDATE_TTL_SECS: u64 = 86_400;
+/// Clock-skew leeway in `policy::validate_stateless` (future `issued_at`).
+pub const CLOCK_SKEW_SECS: u64 = 60;
+/// Safety margin for prune cutoffs (covers restart gaps and boundary races).
+pub const PRUNE_MARGIN_SECS: u64 = 3_600;
+/// Nonces older than this are guaranteed expired: max TTL + skew + margin.
+pub const NONCE_RETENTION_SECS: u64 = MAX_MANDATE_TTL_SECS + CLOCK_SKEW_SECS + PRUNE_MARGIN_SECS;
+/// Velocity windows older than this can never be current: max window + margin.
+pub const VELOCITY_RETENTION_SECS: u64 = MAX_VELOCITY_WINDOW_SECS + PRUNE_MARGIN_SECS;
+/// Default background prune cadence when `MANDATEPAY_PRUNE_INTERVAL_SECS` is unset.
+pub const DEFAULT_PRUNE_INTERVAL_SECS: u64 = 3_600;
 
 /// Result of charging one velocity slot: admission plus the exact window row
 /// that was incremented. Persist `window_start` and hand it to
@@ -347,12 +359,42 @@ impl Db {
     }
 
     pub fn try_claim_nonce(&self, nonce: &str) -> rusqlite::Result<bool> {
+        self.try_claim_nonce_at(nonce, unix_now())
+    }
+
+    /// Clock-injection variant for tests: claim `nonce` with an explicit
+    /// `claimed_at` so prune tests can simulate expired vs live nonces.
+    pub fn try_claim_nonce_at(&self, nonce: &str, claimed_at: u64) -> rusqlite::Result<bool> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute(
             "INSERT OR IGNORE INTO nonces (nonce, claimed_at) VALUES (?1, ?2)",
-            params![nonce, unix_now() as i64],
+            params![nonce, claimed_at as i64],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Delete expired nonces and stale velocity windows. Returns
+    /// `(nonces_deleted, velocity_rows_deleted)`. Never touches `decisions`
+    /// (hash chain) or `orders` (idempotency). Short synchronous DELETEs; the
+    /// mutex is released before returning so callers never hold it across `.await`.
+    pub fn prune_expired(&self) -> rusqlite::Result<(usize, usize)> {
+        self.prune_expired_at(unix_now())
+    }
+
+    /// Clock-injection variant for tests.
+    pub fn prune_expired_at(&self, now: u64) -> rusqlite::Result<(usize, usize)> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let nonce_cutoff = now.saturating_sub(NONCE_RETENTION_SECS) as i64;
+        let velocity_cutoff = now.saturating_sub(VELOCITY_RETENTION_SECS) as i64;
+        let nonces_deleted = conn.execute(
+            "DELETE FROM nonces WHERE claimed_at < ?1",
+            params![nonce_cutoff],
+        )?;
+        let velocity_deleted = conn.execute(
+            "DELETE FROM agent_velocity WHERE window_start < ?1",
+            params![velocity_cutoff],
+        )?;
+        Ok((nonces_deleted, velocity_deleted))
     }
 
     pub fn rollback_nonce(&self, nonce: &str) -> rusqlite::Result<()> {
