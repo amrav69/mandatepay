@@ -22,7 +22,7 @@ async fn app_boots_with_rust_log_info() {
     let state = Arc::new(AppState {
         authority,
         db,
-        gateway: Gateway::Mock,
+        gateway: Gateway::mock(),
         api_key,
         max_mandate_cap: 100_000,
     });
@@ -47,7 +47,7 @@ async fn metrics_endpoint_returns_counters() {
     let state = Arc::new(AppState {
         authority,
         db,
-        gateway: Gateway::Mock,
+        gateway: Gateway::mock(),
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
     });

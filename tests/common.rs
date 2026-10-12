@@ -19,7 +19,7 @@ pub fn test_app() -> (axum::Router, String) {
     let api_key = random_test_key();
     let authority = Authority::from_seed([7u8; 32]);
     let db = Db::open(":memory:").expect("in-memory db");
-    let gateway = Gateway::Mock;
+    let gateway = Gateway::mock();
     let state = Arc::new(AppState {
         authority,
         db,

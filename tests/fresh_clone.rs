@@ -25,7 +25,7 @@ async fn fresh_clone_no_env_still_builds_and_tests() {
     let api_key = random_key();
     let authority = Authority::from_seed([42u8; 32]);
     let db = Db::open(":memory:").expect("in-memory db must open without any env");
-    let gateway = Gateway::Mock;
+    let gateway = Gateway::mock();
     let state = Arc::new(AppState {
         authority,
         db,
@@ -112,7 +112,7 @@ async fn fresh_clone_chain_verify_without_env() {
     let state = Arc::new(AppState {
         authority,
         db,
-        gateway: Gateway::Mock,
+        gateway: Gateway::mock(),
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
     });
