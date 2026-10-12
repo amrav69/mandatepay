@@ -43,6 +43,15 @@ pub const DEFAULT_VELOCITY_WINDOW_SECS: u64 = 60;
 /// is a caller bug, rejected at both layers (C3 covers the i64::MAX wrap).
 pub const MAX_VELOCITY_WINDOW_SECS: u64 = 604_800;
 
+/// Result of charging one velocity slot: admission plus the exact window row
+/// that was incremented. Persist `window_start` and hand it to
+/// `refund_velocity` on failure paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VelocityOutcome {
+    pub allowed: bool,
+    pub window_start: u64,
+}
+
 pub struct Db(Mutex<Connection>);
 
 // M4: helpers for safe i64 -> u32/u64 conversion with explicit bounds check (no silent wrap)
@@ -684,9 +693,19 @@ impl Db {
         Ok(Some(plaintext))
     }
 
-    pub fn check_velocity(&self, agent_id: &str) -> rusqlite::Result<bool> {
+    /// Outcome of a velocity charge: whether the request is admitted plus the
+    /// exact aligned window that was charged. Callers must keep `window_start`
+    /// and pass it back to `refund_velocity` so a rollover between charge and
+    /// refund cannot refund the wrong window.
+    pub fn check_velocity(&self, agent_id: &str) -> rusqlite::Result<VelocityOutcome> {
+        self.check_velocity_at(agent_id, unix_now())
+    }
+
+    /// Test/clock-injection variant: charge `agent_id` at `now` instead of
+    /// `unix_now()`. Production calls `check_velocity`; tests use this to
+    /// simulate a window rollover deterministically.
+    pub fn check_velocity_at(&self, agent_id: &str, now: u64) -> rusqlite::Result<VelocityOutcome> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let now = unix_now();
         conn.execute(
             "INSERT OR IGNORE INTO agents (agent_id, max_cap, velocity_limit, velocity_window_secs, allowed_merchants, created_at, updated_at)
              VALUES (?1, 50000, 50, 60, '[\"merchant-001\"]', ?2, ?2)",
@@ -722,7 +741,10 @@ impl Db {
             params![agent_id, window_start as i64],
             |r| r.get(0),
         )?;
-        Ok(count <= velocity_limit)
+        Ok(VelocityOutcome {
+            allowed: count <= velocity_limit,
+            window_start,
+        })
     }
 
     /// Current velocity count for the agent's active window (0 if none).
@@ -747,6 +769,13 @@ impl Db {
         }
         let now = unix_now();
         let window_start = now - (now % window_secs_u64);
+        drop(conn);
+        self.velocity_count_at(agent_id, window_start)
+    }
+
+    /// Read a specific aligned window (0 if no row). Read-only.
+    pub fn velocity_count_at(&self, agent_id: &str, window_start: u64) -> rusqlite::Result<i64> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let count: i64 = conn
             .query_row(
                 "SELECT count FROM agent_velocity WHERE agent_id = ?1 AND window_start = ?2",
@@ -757,32 +786,16 @@ impl Db {
         Ok(count.max(0))
     }
 
-    /// Compensating decrement for a velocity slot charged to a request that
+    /// Compensating decrement for the exact window charged to a request that
     /// ultimately did not place an order (gateway failure, duplicate loser).
     /// Saturates at zero and only ever lowers the count, so it cannot let
     /// concurrent requests exceed the limit: admission in `check_velocity`
     /// still increments-then-compares atomically under the mutex. Unknown
-    /// agents and non-positive windows are silent no-ops.
-    pub fn refund_velocity(&self, agent_id: &str) -> rusqlite::Result<()> {
+    /// agents are silent no-ops. Callers must pass the `window_start` returned
+    /// by `check_velocity`; recomputing from the current time would refund the
+    /// wrong window after a rollover.
+    pub fn refund_velocity(&self, agent_id: &str, window_start: u64) -> rusqlite::Result<()> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let window_secs: i64 = match conn.query_row(
-            "SELECT velocity_window_secs FROM agents WHERE agent_id = ?1",
-            params![agent_id],
-            |r| r.get(0),
-        ) {
-            Ok(v) => v,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        if window_secs <= 0 {
-            return Ok(());
-        }
-        let window_secs_u64 = window_secs as u64;
-        if window_secs_u64 > MAX_VELOCITY_WINDOW_SECS {
-            return Ok(());
-        }
-        let now = unix_now();
-        let window_start = now - (now % window_secs_u64);
         conn.execute(
             "UPDATE agent_velocity SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END WHERE agent_id = ?1 AND window_start = ?2",
             params![agent_id, window_start as i64],

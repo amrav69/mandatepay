@@ -25,9 +25,9 @@ fn agent_crud_and_velocity() {
     db.update_agent("vel-agent", Some(50000), Some(5), Some(60), None)
         .unwrap();
     for _ in 0..5 {
-        assert!(db.check_velocity("vel-agent").unwrap());
+        assert!(db.check_velocity("vel-agent").unwrap().allowed);
     }
-    assert!(!db.check_velocity("vel-agent").unwrap());
+    assert!(!db.check_velocity("vel-agent").unwrap().allowed);
 }
 
 #[test]
@@ -410,9 +410,9 @@ fn velocity_success_increments_count() {
     db.update_agent("port2-success", Some(50_000), Some(5), Some(60), None)
         .unwrap();
     assert_eq!(db.velocity_count("port2-success").unwrap(), 0);
-    assert!(db.check_velocity("port2-success").unwrap());
+    assert!(db.check_velocity("port2-success").unwrap().allowed);
     assert_eq!(db.velocity_count("port2-success").unwrap(), 1);
-    assert!(db.check_velocity("port2-success").unwrap());
+    assert!(db.check_velocity("port2-success").unwrap().allowed);
     assert_eq!(db.velocity_count("port2-success").unwrap(), 2);
 }
 
@@ -423,10 +423,11 @@ fn velocity_gateway_failure_refund_leaves_count_unchanged() {
     let db = Db::open(":memory:").unwrap();
     db.update_agent("port2-failure", Some(50_000), Some(5), Some(60), None)
         .unwrap();
-    assert!(db.check_velocity("port2-failure").unwrap());
-    assert!(db.check_velocity("port2-failure").unwrap());
+    let w1 = db.check_velocity("port2-failure").unwrap().window_start;
+    let w2 = db.check_velocity("port2-failure").unwrap().window_start;
+    assert_eq!(w1, w2, "fast test must stay inside one window");
     assert_eq!(db.velocity_count("port2-failure").unwrap(), 2);
-    db.refund_velocity("port2-failure").unwrap();
+    db.refund_velocity("port2-failure", w2).unwrap();
     assert_eq!(
         db.velocity_count("port2-failure").unwrap(),
         1,
@@ -442,19 +443,22 @@ fn velocity_double_refund_at_zero_stays_zero() {
     db.update_agent("port2-saturate", Some(50_000), Some(5), Some(60), None)
         .unwrap();
     assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
-    db.refund_velocity("port2-saturate").unwrap();
-    db.refund_velocity("port2-saturate").unwrap();
+    // Charge once to learn the exact window, then refund twice to saturate.
+    let window = db.check_velocity("port2-saturate").unwrap().window_start;
+    db.refund_velocity("port2-saturate", window).unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    db.refund_velocity("port2-saturate", window).unwrap();
     assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
     let mut admitted = 0;
     for _ in 0..7 {
-        if db.check_velocity("port2-saturate").unwrap() {
+        if db.check_velocity("port2-saturate").unwrap().allowed {
             admitted += 1;
         }
     }
     assert_eq!(admitted, 5);
     // Unknown agents read 0 and refund is a silent no-op.
     assert_eq!(db.velocity_count("port2-ghost").unwrap(), 0);
-    db.refund_velocity("port2-ghost").unwrap();
+    db.refund_velocity("port2-ghost", window).unwrap();
 }
 
 #[test]
@@ -469,7 +473,7 @@ fn velocity_concurrent_check_refund_storm_never_exceeds_limit() {
     for _ in 0..20 {
         let d = db.clone();
         handles.push(std::thread::spawn(move || {
-            d.check_velocity("port2-storm").unwrap()
+            d.check_velocity("port2-storm").unwrap().allowed
         }));
     }
     let admitted = handles
@@ -483,8 +487,9 @@ fn velocity_concurrent_check_refund_storm_never_exceeds_limit() {
         let d = db.clone();
         handles.push(std::thread::spawn(move || {
             for _ in 0..50 {
-                let _ = d.check_velocity("port2-storm");
-                let _ = d.refund_velocity("port2-storm");
+                if let Ok(outcome) = d.check_velocity("port2-storm") {
+                    let _ = d.refund_velocity("port2-storm", outcome.window_start);
+                }
             }
         }));
     }
@@ -495,5 +500,35 @@ fn velocity_concurrent_check_refund_storm_never_exceeds_limit() {
     assert!(
         count >= 0,
         "refund storm must never drive the count negative"
+    );
+}
+
+#[test]
+fn velocity_refund_targets_charged_window_not_current_window() {
+    // PORT 2b: charge in window A, roll to window B, refund A's start. Only
+    // A's count must drop; B stays untouched. Recomputing refund from the
+    // current time would hit B (or nothing) and leave A at 2.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2b-roll", Some(50_000), Some(10), Some(60), None)
+        .unwrap();
+    // Fixed epoch times: 120,121 -> window 120; 180 -> window 180.
+    let a1 = db.check_velocity_at("port2b-roll", 120).unwrap();
+    assert_eq!(a1.window_start, 120);
+    let a2 = db.check_velocity_at("port2b-roll", 121).unwrap();
+    assert_eq!(a2.window_start, 120);
+    assert_eq!(db.velocity_count_at("port2b-roll", 120).unwrap(), 2);
+    let b1 = db.check_velocity_at("port2b-roll", 180).unwrap();
+    assert_eq!(b1.window_start, 180);
+    assert_eq!(db.velocity_count_at("port2b-roll", 180).unwrap(), 1);
+    db.refund_velocity("port2b-roll", 120).unwrap();
+    assert_eq!(
+        db.velocity_count_at("port2b-roll", 120).unwrap(),
+        1,
+        "refund must decrement the charged window A"
+    );
+    assert_eq!(
+        db.velocity_count_at("port2b-roll", 180).unwrap(),
+        1,
+        "refund of A must leave window B untouched"
     );
 }

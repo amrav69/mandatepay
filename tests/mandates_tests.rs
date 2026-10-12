@@ -306,8 +306,8 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
     assert!(matches!(d1, Decision::Allow { .. }));
     // Simulate velocity failure after evaluate: check_velocity should allow first,
     // but second call within same window should reject.
-    assert!(db.check_velocity("vel-rollback-agent").unwrap()); // first increments to 1 <=1 -> true
-    assert!(!db.check_velocity("vel-rollback-agent").unwrap()); // second increments to 2 >1 -> false (rejected)
+    assert!(db.check_velocity("vel-rollback-agent").unwrap().allowed); // first increments to 1 <=1 -> true
+    assert!(!db.check_velocity("vel-rollback-agent").unwrap().allowed); // second increments to 2 >1 -> false (rejected)
     // The second mandate with same nonce would have already claimed nonce inside evaluate
     // if we tried to evaluate it. To emulate the bug: evaluate claimed nonce, then velocity
     // failed, so we rollback.
@@ -324,7 +324,7 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
         "second evaluate should Allow before velocity"
     );
     // Now velocity check fails again -> our fix rolls back nonce
-    let vel_ok = db.check_velocity("vel-rollback-agent").unwrap();
+    let vel_ok = db.check_velocity("vel-rollback-agent").unwrap().allowed;
     assert!(!vel_ok, "velocity should still be exceeded");
     // Emulate app.rs rollback on velocity rejection
     if !vel_ok {

@@ -339,13 +339,20 @@ pub async fn checkout(
     // validity verdict. Without rollback, a velocity-rejected mandate could never be retried
     // even after the window cleared, which would be surprising. Documented behavior: velocity
     // rejections are retryable; gateway failures also rollback for same reason.
-    if matches!(decision, Decision::Allow { .. }) && !state.db.check_velocity(agent_id)? {
-        if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
-            tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after velocity rejection");
+    // Keep the exact window charged so later refunds (gateway/duplicate) hit
+    // that row even if the clock rolled to a new window in between.
+    let mut velocity_window: Option<u64> = None;
+    if matches!(decision, Decision::Allow { .. }) {
+        let outcome = state.db.check_velocity(agent_id)?;
+        velocity_window = Some(outcome.window_start);
+        if !outcome.allowed {
+            if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
+                tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after velocity rejection");
+            }
+            decision = Decision::Reject {
+                reason: format!("velocity limit exceeded for agent {}", agent_id),
+            };
         }
-        decision = Decision::Reject {
-            reason: format!("velocity limit exceeded for agent {}", agent_id),
-        };
     }
 
     let (mut label, mut reason) = match &decision {
@@ -415,8 +422,10 @@ pub async fn checkout(
                             tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight amount mismatch");
                         }
                         // Velocity was charged before the reservation race;
-                        // no order was placed, so refund the slot.
-                        if let Err(e) = state.db.refund_velocity(agent_id) {
+                        // no order was placed, so refund the exact window charged.
+                        if let Some(window_start) = velocity_window
+                            && let Err(e) = state.db.refund_velocity(agent_id, window_start)
+                        {
                             tracing::error!(error = %e, "failed to refund velocity after duplicate in-flight amount mismatch");
                         }
                         label = "REJECT";
@@ -438,8 +447,10 @@ pub async fn checkout(
                         tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight rejection");
                     }
                     // Velocity was charged before the reservation race;
-                    // no order was placed, so refund the slot.
-                    if let Err(e) = state.db.refund_velocity(agent_id) {
+                    // no order was placed, so refund the exact window charged.
+                    if let Some(window_start) = velocity_window
+                        && let Err(e) = state.db.refund_velocity(agent_id, window_start)
+                    {
                         tracing::error!(error = %e, "failed to refund velocity after duplicate in-flight rejection");
                     }
                     // Note: we do not clear the winner's pending; winner will finalize.
@@ -471,8 +482,11 @@ pub async fn checkout(
                             tracing::error!(error = %rollback_err, nonce = %req.mandate.nonce, "failed to roll back nonce after gateway failure");
                         }
                         // Velocity was charged before the gateway call; the
-                        // order never happened, so refund the slot.
-                        if let Err(rollback_err) = state.db.refund_velocity(agent_id) {
+                        // order never happened, so refund the exact window charged.
+                        if let Some(window_start) = velocity_window
+                            && let Err(rollback_err) =
+                                state.db.refund_velocity(agent_id, window_start)
+                        {
                             tracing::error!(error = %rollback_err, "failed to refund velocity after gateway failure");
                         }
                         reason = format!("{reason}; gateway: {e}");
