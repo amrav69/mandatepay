@@ -473,39 +473,97 @@ pub async fn checkout(
                     reason = "duplicate mandate_id: order already in flight".into();
                 }
             } else {
-                match state
-                    .gateway
-                    .create_order(&req.mandate, req.amount_minor)
-                    .await
-                {
-                    Ok(order) => {
-                        if let Err(e) = state
-                            .db
-                            .finalize_reserved_order(&req.mandate.mandate_id, &order.id)
-                        {
-                            tracing::error!(error = %e, mandate_id = %req.mandate.mandate_id, "failed to finalize reserved order after gateway success");
+                // Phase3 cancel-safety: run gateway + finalize/rollback in a
+                // spawned task so cleanup always runs even if the client
+                // disconnects and axum drops this handler future mid-await.
+                // The task owns a drop-guard that rolls back pending/nonce/
+                // velocity on panic; normal paths disarm it after explicit
+                // cleanup. No DB mutex is held across the gateway `.await`.
+                struct PendingGuard {
+                    state: Arc<AppState>,
+                    mandate_id: String,
+                    nonce: String,
+                    agent_id: String,
+                    window_start: Option<u64>,
+                    armed: bool,
+                }
+                impl Drop for PendingGuard {
+                    fn drop(&mut self) {
+                        if self.armed {
+                            let _ = self.state.db.clear_pending_order(&self.mandate_id);
+                            let _ = self.state.db.rollback_nonce(&self.nonce);
+                            if let Some(window_start) = self.window_start {
+                                let _ = self.state.db.refund_velocity(&self.agent_id, window_start);
+                            }
                         }
-                        order_id = Some(order.id);
                     }
-                    Err(e) => {
-                        if let Err(rollback_err) =
-                            state.db.clear_pending_order(&req.mandate.mandate_id)
-                        {
-                            tracing::error!(error = %rollback_err, mandate_id = %req.mandate.mandate_id, "failed to clear pending order after gateway failure");
+                }
+                let task_state = Arc::clone(&state);
+                let task_mandate = req.mandate.clone();
+                let task_amount = req.amount_minor;
+                let task_mandate_id = req.mandate.mandate_id.clone();
+                let task_nonce = req.mandate.nonce.clone();
+                let task_agent = agent_id.to_string();
+                let task_window = velocity_window;
+                let join = tokio::spawn(async move {
+                    let mut guard = PendingGuard {
+                        state: Arc::clone(&task_state),
+                        mandate_id: task_mandate_id.clone(),
+                        nonce: task_nonce.clone(),
+                        agent_id: task_agent.clone(),
+                        window_start: task_window,
+                        armed: true,
+                    };
+                    let result = task_state
+                        .gateway
+                        .create_order(&task_mandate, task_amount)
+                        .await;
+                    match result {
+                        Ok(order) => {
+                            if let Err(e) = task_state
+                                .db
+                                .finalize_reserved_order(&task_mandate_id, &order.id)
+                            {
+                                tracing::error!(error = %e, mandate_id = %task_mandate_id, "failed to finalize reserved order after gateway success");
+                            }
+                            guard.armed = false;
+                            Ok(order.id)
                         }
-                        if let Err(rollback_err) = state.db.rollback_nonce(&req.mandate.nonce) {
-                            tracing::error!(error = %rollback_err, nonce = %req.mandate.nonce, "failed to roll back nonce after gateway failure");
+                        Err(e) => {
+                            if let Err(rollback_err) =
+                                task_state.db.clear_pending_order(&task_mandate_id)
+                            {
+                                tracing::error!(error = %rollback_err, mandate_id = %task_mandate_id, "failed to clear pending order after gateway failure");
+                            }
+                            if let Err(rollback_err) = task_state.db.rollback_nonce(&task_nonce) {
+                                tracing::error!(error = %rollback_err, nonce = %task_nonce, "failed to roll back nonce after gateway failure");
+                            }
+                            // Velocity was charged before the gateway call; the
+                            // order never happened, so refund the exact window charged.
+                            if let Some(window_start) = task_window
+                                && let Err(rollback_err) =
+                                    task_state.db.refund_velocity(&task_agent, window_start)
+                            {
+                                tracing::error!(error = %rollback_err, "failed to refund velocity after gateway failure");
+                            }
+                            guard.armed = false;
+                            Err(e.to_string())
                         }
-                        // Velocity was charged before the gateway call; the
-                        // order never happened, so refund the exact window charged.
-                        if let Some(window_start) = velocity_window
-                            && let Err(rollback_err) =
-                                state.db.refund_velocity(agent_id, window_start)
-                        {
-                            tracing::error!(error = %rollback_err, "failed to refund velocity after gateway failure");
-                        }
+                    }
+                });
+                match join.await {
+                    Ok(Ok(id)) => {
+                        order_id = Some(id);
+                    }
+                    Ok(Err(e)) => {
                         reason = format!("{reason}; gateway: {e}");
                         label = "REJECT";
+                    }
+                    Err(_) => {
+                        // Spawned task panicked; its drop-guard already rolled
+                        // back pending/nonce/velocity. Map to a generic 500
+                        // without leaking internals (no oracle).
+                        return Err(AppError::Internal("internal error".into()));
                     }
                 }
             }

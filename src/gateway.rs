@@ -34,7 +34,7 @@ struct RazorpayOrderResponse {
     created_at: u64,
 }
 
-/// Failure-injection modes for tests (PORT 4a).
+/// Failure-injection modes for tests (PORT 4a, phase3 cancel-safety).
 /// Never constructed in production; only via [`Gateway::failing_for_tests`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureMode {
@@ -44,6 +44,10 @@ pub enum FailureMode {
     Timeout,
     /// Success response whose body does not parse as an order.
     MalformedBody,
+    /// Success after a delay, so tests can drop the handler mid-await.
+    Delay,
+    /// Panic inside the gateway call, so tests can exercise the JoinError path.
+    Panic,
 }
 
 pub enum Gateway {
@@ -200,6 +204,20 @@ impl Gateway {
                     Err(GatewayError::Http("injected gateway timeout".into()))
                 }
                 FailureMode::MalformedBody => parse_order_body("{not an order}"),
+                FailureMode::Delay => {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    Ok(GatewayOrder {
+                        id: try_new_token("order_mock_", 9)
+                            .map_err(|e| GatewayError::Internal(e.to_string()))?,
+                        entity: "order".into(),
+                        amount: amount_minor,
+                        currency: "INR".into(),
+                        status: "created".into(),
+                        created_at: unix_now(),
+                        live: false,
+                    })
+                }
+                FailureMode::Panic => panic!("injected gateway panic"),
             },
         }
     }
