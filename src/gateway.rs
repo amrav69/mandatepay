@@ -34,6 +34,18 @@ struct RazorpayOrderResponse {
     created_at: u64,
 }
 
+/// Failure-injection modes for tests (PORT 4a).
+/// Never constructed in production; only via [`Gateway::failing_for_tests`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureMode {
+    /// Immediate gateway error.
+    Error,
+    /// Slow failure after a short delay (simulates a gateway timeout).
+    Timeout,
+    /// Success response whose body does not parse as an order.
+    MalformedBody,
+}
+
 pub enum Gateway {
     Mock,
     Razorpay {
@@ -41,9 +53,39 @@ pub enum Gateway {
         key_secret: String,
         http: reqwest::Client,
     },
+    /// Test-only double. Never returned by [`Gateway::from_env`] and never
+    /// constructed in `main.rs`/`app.rs`; exercises the checkout failure path
+    /// (pending/nonce/velocity rollback) in integration tests.
+    Failing {
+        mode: FailureMode,
+    },
+}
+
+/// Parse an order response body (shared shape check for the `MalformedBody`
+/// injection mode and its unit test; the live Razorpay path uses
+/// `resp.json()` directly and is left untouched).
+fn parse_order_body(text: &str) -> Result<GatewayOrder, GatewayError> {
+    let order: RazorpayOrderResponse =
+        serde_json::from_str(text).map_err(|e| GatewayError::Api(e.to_string()))?;
+    Ok(GatewayOrder {
+        id: order.id,
+        entity: order.entity,
+        amount: order.amount,
+        currency: order.currency,
+        status: order.status,
+        created_at: order.created_at,
+        live: false,
+    })
 }
 
 impl Gateway {
+    /// Explicitly test-only constructor for the failing double.
+    /// Production code must use [`Gateway::from_env`], which never returns
+    /// `Failing` (see `from_env` below and `main.rs` which only calls it).
+    pub fn failing_for_tests(mode: FailureMode) -> Self {
+        Gateway::Failing { mode }
+    }
+
     pub fn from_env() -> Self {
         let key_id = std::env::var("RAZORPAY_KEY_ID")
             .unwrap_or_default()
@@ -81,6 +123,7 @@ impl Gateway {
         match self {
             Gateway::Mock => "mock",
             Gateway::Razorpay { .. } => "razorpay-test",
+            Gateway::Failing { .. } => "failing-test",
         }
     }
 
@@ -150,6 +193,14 @@ impl Gateway {
                     live: true,
                 })
             }
+            Gateway::Failing { mode } => match mode {
+                FailureMode::Error => Err(GatewayError::Api("injected gateway failure".into())),
+                FailureMode::Timeout => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    Err(GatewayError::Http("injected gateway timeout".into()))
+                }
+                FailureMode::MalformedBody => parse_order_body("{not an order}"),
+            },
         }
     }
 }
@@ -163,6 +214,18 @@ mod tests {
     fn label_mock() {
         let g = Gateway::Mock;
         assert_eq!(g.label(), "mock");
+    }
+
+    #[test]
+    fn parse_body_accepts_valid_order_rejects_garbage() {
+        let order = parse_order_body(
+            r#"{"id":"order_1","entity":"order","amount":100,"currency":"INR","status":"created","created_at":1}"#,
+        )
+        .unwrap();
+        assert_eq!(order.id, "order_1");
+        assert!(!order.live);
+        assert!(parse_order_body("{not an order}").is_err());
+        assert!(parse_order_body("").is_err());
     }
 
     #[test]

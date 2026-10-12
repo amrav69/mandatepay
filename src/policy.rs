@@ -1,5 +1,5 @@
 use crate::mandates::{Authority, Mandate, unix_now};
-use crate::store::Db;
+use crate::store::{Db, MAX_MANDATE_TTL_SECS};
 
 pub enum Decision {
     Allow { reason: String },
@@ -38,6 +38,10 @@ pub fn validate_stateless(
     }
     if mandate.expires_at <= mandate.issued_at {
         return reject("expires_at must be after issued_at");
+    }
+    if mandate.expires_at.saturating_sub(mandate.issued_at) > MAX_MANDATE_TTL_SECS {
+        // Generic: exact limit stays server-side (no policy oracle).
+        return reject("mandate lifetime exceeds policy");
     }
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");

@@ -99,6 +99,21 @@ pub fn parse_max_cap() -> u64 {
     }
 }
 
+/// Background prune cadence (`MANDATEPAY_PRUNE_INTERVAL_SECS`, default hourly).
+/// Garbage or zero falls back to `DEFAULT_PRUNE_INTERVAL_SECS` with a warning.
+pub fn parse_prune_interval_secs() -> u64 {
+    match std::env::var("MANDATEPAY_PRUNE_INTERVAL_SECS") {
+        Ok(v) if !v.trim().is_empty() => match v.trim().parse::<u64>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(value = %v, "MANDATEPAY_PRUNE_INTERVAL_SECS invalid, falling back to 3600");
+                crate::store::DEFAULT_PRUNE_INTERVAL_SECS
+            }
+        },
+        _ => crate::store::DEFAULT_PRUNE_INTERVAL_SECS,
+    }
+}
+
 /// Master key (admin): gates `/v1/agents*` management endpoints only.
 /// Per-agent keys gate `POST /v1/mandates` and `POST /v1/checkout` via
 /// `require_agent_key` inside those handlers (needs the body `agent_id`).
@@ -339,13 +354,20 @@ pub async fn checkout(
     // validity verdict. Without rollback, a velocity-rejected mandate could never be retried
     // even after the window cleared, which would be surprising. Documented behavior: velocity
     // rejections are retryable; gateway failures also rollback for same reason.
-    if matches!(decision, Decision::Allow { .. }) && !state.db.check_velocity(agent_id)? {
-        if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
-            tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after velocity rejection");
+    // Keep the exact window charged so later refunds (gateway/duplicate) hit
+    // that row even if the clock rolled to a new window in between.
+    let mut velocity_window: Option<u64> = None;
+    if matches!(decision, Decision::Allow { .. }) {
+        let outcome = state.db.check_velocity(agent_id)?;
+        velocity_window = Some(outcome.window_start);
+        if !outcome.allowed {
+            if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
+                tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after velocity rejection");
+            }
+            decision = Decision::Reject {
+                reason: format!("velocity limit exceeded for agent {}", agent_id),
+            };
         }
-        decision = Decision::Reject {
-            reason: format!("velocity limit exceeded for agent {}", agent_id),
-        };
     }
 
     let (mut label, mut reason) = match &decision {
@@ -414,6 +436,13 @@ pub async fn checkout(
                         if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
                             tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight amount mismatch");
                         }
+                        // Velocity was charged before the reservation race;
+                        // no order was placed, so refund the exact window charged.
+                        if let Some(window_start) = velocity_window
+                            && let Err(e) = state.db.refund_velocity(agent_id, window_start)
+                        {
+                            tracing::error!(error = %e, "failed to refund velocity after duplicate in-flight amount mismatch");
+                        }
                         label = "REJECT";
                         reason = "duplicate mandate_id: order already in flight (amount or policy mismatch)"
                             .into();
@@ -431,6 +460,13 @@ pub async fn checkout(
                     // visible for subsequent retries via the early cache above.
                     if let Err(e) = state.db.rollback_nonce(&req.mandate.nonce) {
                         tracing::error!(error = %e, nonce = %req.mandate.nonce, "failed to roll back nonce after duplicate in-flight rejection");
+                    }
+                    // Velocity was charged before the reservation race;
+                    // no order was placed, so refund the exact window charged.
+                    if let Some(window_start) = velocity_window
+                        && let Err(e) = state.db.refund_velocity(agent_id, window_start)
+                    {
+                        tracing::error!(error = %e, "failed to refund velocity after duplicate in-flight rejection");
                     }
                     // Note: we do not clear the winner's pending; winner will finalize.
                     label = "REJECT";
@@ -459,6 +495,14 @@ pub async fn checkout(
                         }
                         if let Err(rollback_err) = state.db.rollback_nonce(&req.mandate.nonce) {
                             tracing::error!(error = %rollback_err, nonce = %req.mandate.nonce, "failed to roll back nonce after gateway failure");
+                        }
+                        // Velocity was charged before the gateway call; the
+                        // order never happened, so refund the exact window charged.
+                        if let Some(window_start) = velocity_window
+                            && let Err(rollback_err) =
+                                state.db.refund_velocity(agent_id, window_start)
+                        {
+                            tracing::error!(error = %rollback_err, "failed to refund velocity after gateway failure");
                         }
                         reason = format!("{reason}; gateway: {e}");
                         label = "REJECT";

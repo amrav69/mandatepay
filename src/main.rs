@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use mandatepay::{
-    app::{build_router, parse_max_cap},
+    app::{build_router, parse_max_cap, parse_prune_interval_secs},
     auth::resolve_api_key,
     gateway::Gateway,
     mandates::{self, Authority},
@@ -43,6 +43,20 @@ async fn main() {
         rupees = max_mandate_cap as f64 / 100.0,
         "mandate cap"
     );
+    // PORT 3: prune expired nonces + stale velocity windows at startup.
+    // Synchronous DELETEs; the DB mutex is released before any `.await` below.
+    match db.prune_expired() {
+        Ok((nonces, velocity)) => {
+            tracing::info!(
+                nonces_pruned = nonces,
+                velocity_pruned = velocity,
+                "startup prune complete"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "startup prune failed");
+        }
+    }
     let state = Arc::new(mandatepay::app::AppState {
         authority,
         db,
@@ -50,6 +64,32 @@ async fn main() {
         api_key: api_key.clone(),
         max_mandate_cap,
     });
+
+    // PORT 3: hourly background prune (interval via MANDATEPAY_PRUNE_INTERVAL_SECS).
+    // Each tick does a short synchronous prune then awaits the next tick;
+    // the mutex is never held across `.await`.
+    {
+        let prune_state = Arc::clone(&state);
+        let interval_secs = parse_prune_interval_secs();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                match prune_state.db.prune_expired() {
+                    Ok((nonces, velocity)) => {
+                        tracing::info!(
+                            nonces_pruned = nonces,
+                            velocity_pruned = velocity,
+                            "background prune complete"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "background prune failed");
+                    }
+                }
+            }
+        });
+    }
 
     let app = build_router(state);
 

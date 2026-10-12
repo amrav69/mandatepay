@@ -1,4 +1,4 @@
-use mandatepay::store::Db;
+use mandatepay::store::{Db, NONCE_RETENTION_SECS, VELOCITY_RETENTION_SECS};
 
 #[test]
 fn agent_crud_and_velocity() {
@@ -25,9 +25,9 @@ fn agent_crud_and_velocity() {
     db.update_agent("vel-agent", Some(50000), Some(5), Some(60), None)
         .unwrap();
     for _ in 0..5 {
-        assert!(db.check_velocity("vel-agent").unwrap());
+        assert!(db.check_velocity("vel-agent").unwrap().allowed);
     }
-    assert!(!db.check_velocity("vel-agent").unwrap());
+    assert!(!db.check_velocity("vel-agent").unwrap().allowed);
 }
 
 #[test]
@@ -401,4 +401,257 @@ fn m4_u32_and_u64_bounds_checked_no_wrap() {
     db2.get_or_create_agent("good-agent").unwrap();
     let p = db2.get_agent_policy("good-agent").unwrap().unwrap();
     assert_eq!(p.velocity_limit, 50);
+}
+
+#[test]
+fn velocity_success_increments_count() {
+    // A successful velocity check must visibly consume one budget slot.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-success", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 0);
+    assert!(db.check_velocity("port2-success").unwrap().allowed);
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 1);
+    assert!(db.check_velocity("port2-success").unwrap().allowed);
+    assert_eq!(db.velocity_count("port2-success").unwrap(), 2);
+}
+
+#[test]
+fn velocity_gateway_failure_refund_leaves_count_unchanged() {
+    // A request that charged velocity but never placed an order (gateway
+    // failure) must get its slot back: two checks minus one refund == one check.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-failure", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    let w1 = db.check_velocity("port2-failure").unwrap().window_start;
+    let w2 = db.check_velocity("port2-failure").unwrap().window_start;
+    assert_eq!(w1, w2, "fast test must stay inside one window");
+    assert_eq!(db.velocity_count("port2-failure").unwrap(), 2);
+    db.refund_velocity("port2-failure", w2).unwrap();
+    assert_eq!(
+        db.velocity_count("port2-failure").unwrap(),
+        1,
+        "refunded failure must read as if the failed request never charged"
+    );
+}
+
+#[test]
+fn velocity_double_refund_at_zero_stays_zero() {
+    // Refunding an empty window must saturate at zero: never negative, no
+    // error, and the limit must still enforce afterwards.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2-saturate", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    // Charge once to learn the exact window, then refund twice to saturate.
+    let window = db.check_velocity("port2-saturate").unwrap().window_start;
+    db.refund_velocity("port2-saturate", window).unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    db.refund_velocity("port2-saturate", window).unwrap();
+    assert_eq!(db.velocity_count("port2-saturate").unwrap(), 0);
+    let mut admitted = 0;
+    for _ in 0..7 {
+        if db.check_velocity("port2-saturate").unwrap().allowed {
+            admitted += 1;
+        }
+    }
+    assert_eq!(admitted, 5);
+    // Unknown agents read 0 and refund is a silent no-op.
+    assert_eq!(db.velocity_count("port2-ghost").unwrap(), 0);
+    db.refund_velocity("port2-ghost", window).unwrap();
+}
+
+#[test]
+fn velocity_concurrent_check_refund_storm_never_exceeds_limit() {
+    // Racing admissions must respect the limit even with refunds interleaved:
+    // refunds only lower the counter, they never create extra admissions.
+    use std::sync::Arc;
+    let db = Arc::new(Db::open(":memory:").unwrap());
+    db.update_agent("port2-storm", Some(50_000), Some(5), Some(60), None)
+        .unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            d.check_velocity("port2-storm").unwrap().allowed
+        }));
+    }
+    let admitted = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(admitted, 5, "exactly the limit must be admitted");
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let d = db.clone();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..50 {
+                if let Ok(outcome) = d.check_velocity("port2-storm") {
+                    let _ = d.refund_velocity("port2-storm", outcome.window_start);
+                }
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let count = db.velocity_count("port2-storm").unwrap();
+    assert!(
+        count >= 0,
+        "refund storm must never drive the count negative"
+    );
+}
+
+#[test]
+fn velocity_refund_targets_charged_window_not_current_window() {
+    // PORT 2b: charge in window A, roll to window B, refund A's start. Only
+    // A's count must drop; B stays untouched. Recomputing refund from the
+    // current time would hit B (or nothing) and leave A at 2.
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port2b-roll", Some(50_000), Some(10), Some(60), None)
+        .unwrap();
+    // Fixed epoch times: 120,121 -> window 120; 180 -> window 180.
+    let a1 = db.check_velocity_at("port2b-roll", 120).unwrap();
+    assert_eq!(a1.window_start, 120);
+    let a2 = db.check_velocity_at("port2b-roll", 121).unwrap();
+    assert_eq!(a2.window_start, 120);
+    assert_eq!(db.velocity_count_at("port2b-roll", 120).unwrap(), 2);
+    let b1 = db.check_velocity_at("port2b-roll", 180).unwrap();
+    assert_eq!(b1.window_start, 180);
+    assert_eq!(db.velocity_count_at("port2b-roll", 180).unwrap(), 1);
+    db.refund_velocity("port2b-roll", 120).unwrap();
+    assert_eq!(
+        db.velocity_count_at("port2b-roll", 120).unwrap(),
+        1,
+        "refund must decrement the charged window A"
+    );
+    assert_eq!(
+        db.velocity_count_at("port2b-roll", 180).unwrap(),
+        1,
+        "refund of A must leave window B untouched"
+    );
+}
+
+#[test]
+fn prune_expired_nonce_pruned_live_nonce_kept() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    let now = unix_now();
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 1_000);
+    assert!(db.try_claim_nonce_at("n_prune_old", old).unwrap());
+    assert!(db.try_claim_nonce_at("n_prune_live", now).unwrap());
+    let (nonces_deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(nonces_deleted, 1, "only the expired nonce must be pruned");
+    // Old nonce gone: reclaim succeeds. Live nonce kept: reclaim fails.
+    assert!(
+        db.try_claim_nonce("n_prune_old").unwrap(),
+        "expired nonce must have been pruned"
+    );
+    assert!(
+        !db.try_claim_nonce("n_prune_live").unwrap(),
+        "live nonce must never be pruned"
+    );
+}
+
+#[test]
+fn prune_replay_of_expired_mandate_still_rejected() {
+    use mandatepay::mandates::{Authority, Mandate, unix_now};
+    use mandatepay::policy::{Decision, evaluate};
+    let db = Db::open(":memory:").unwrap();
+    let auth = Authority::from_seed([7u8; 32]);
+    let now = unix_now();
+    let mandate = Mandate {
+        version: 1,
+        mandate_id: "mnd_prune_expired".into(),
+        agent_id: "prune-agent".into(),
+        merchant_id: "merchant-001".into(),
+        action: "create_order".into(),
+        currency: "INR".into(),
+        max_amount_minor: 5_000,
+        issued_at: now.saturating_sub(90_000),
+        expires_at: now.saturating_sub(3_600),
+        nonce: "n_prune_expired_replay".into(),
+    };
+    let sig = auth.sign(&mandate).unwrap();
+    let allow = vec!["merchant-001".to_string()];
+    // Claim its nonce as old, then prune it away.
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 5_000);
+    assert!(db.try_claim_nonce_at(&mandate.nonce, old).unwrap());
+    let (deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(deleted, 1);
+    assert!(
+        db.try_claim_nonce(&mandate.nonce).unwrap(),
+        "prune must have removed the old nonce"
+    );
+    db.rollback_nonce(&mandate.nonce).unwrap();
+    // Even though the nonce is gone, expiry rejects before any nonce claim.
+    let d = evaluate(&auth, &mandate, &sig, 1_000, &allow, &db);
+    match d {
+        Decision::Reject { reason } => assert!(
+            reason.contains("expired"),
+            "pruned-but-expired replay must still fail on expiry, got {reason}"
+        ),
+        Decision::Allow { .. } => panic!("expired mandate must never Allow after prune"),
+    }
+}
+
+#[test]
+fn prune_keeps_decisions_chain_and_orders() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    db.record_decision("/v1/checkout", "ALLOW", "ok", "{}")
+        .unwrap();
+    db.record_decision("/v1/checkout", "REJECT", "no", "{}")
+        .unwrap();
+    db.cache_order("mnd_prune_keep", "order_keep", 1_000)
+        .unwrap();
+    let now = unix_now();
+    let old = now.saturating_sub(NONCE_RETENTION_SECS + 1_000);
+    assert!(db.try_claim_nonce_at("n_prune_chain_old", old).unwrap());
+    let (nonces_deleted, _) = db.prune_expired_at(now).unwrap();
+    assert_eq!(nonces_deleted, 1);
+    assert!(
+        db.verify_chain().unwrap(),
+        "decisions chain must verify after prune"
+    );
+    let stats = db.stats().unwrap();
+    assert_eq!(stats.total, 2, "decisions must never be pruned");
+    assert_eq!(
+        db.get_cached_order("mnd_prune_keep").unwrap().as_deref(),
+        Some("order_keep"),
+        "orders (idempotency) must never be pruned"
+    );
+}
+
+#[test]
+fn prune_stale_velocity_gone_live_velocity_kept() {
+    use mandatepay::mandates::unix_now;
+    let db = Db::open(":memory:").unwrap();
+    db.update_agent("port3-vel", Some(50_000), Some(50), Some(60), None)
+        .unwrap();
+    let now = unix_now();
+    let old_now = now.saturating_sub(VELOCITY_RETENTION_SECS + 10_000);
+    let old_outcome = db.check_velocity_at("port3-vel", old_now).unwrap();
+    let live_outcome = db.check_velocity_at("port3-vel", now).unwrap();
+    assert_ne!(old_outcome.window_start, live_outcome.window_start);
+    assert_eq!(
+        db.velocity_count_at("port3-vel", old_outcome.window_start)
+            .unwrap(),
+        1
+    );
+    let (_, velocity_deleted) = db.prune_expired_at(now).unwrap();
+    assert_eq!(velocity_deleted, 1, "only the stale window must be pruned");
+    assert_eq!(
+        db.velocity_count_at("port3-vel", old_outcome.window_start)
+            .unwrap(),
+        0,
+        "stale window row must be gone"
+    );
+    assert_eq!(
+        db.velocity_count_at("port3-vel", live_outcome.window_start)
+            .unwrap(),
+        1,
+        "live velocity row must be untouched"
+    );
 }

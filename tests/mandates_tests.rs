@@ -133,6 +133,55 @@ fn expired_mandate_rejected_by_policy() {
 }
 
 #[test]
+fn mandate_lifetime_cap_enforced_at_verification() {
+    use mandatepay::store::MAX_MANDATE_TTL_SECS;
+    let auth = Authority::from_seed([7u8; 32]);
+    let (_dir, db) = test_db();
+    let allow = allowlist();
+    let now = unix_now();
+    // Boundary: exactly MAX is allowed (other gates pass, nonce fresh).
+    let mut ok = sample_mandate("n_life_ok");
+    ok.issued_at = now - 10;
+    ok.expires_at = ok.issued_at + MAX_MANDATE_TTL_SECS;
+    let sig_ok = auth.sign(&ok).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &ok, &sig_ok, CAP, &allow, &db),
+            Decision::Allow { .. }
+        ),
+        "lifetime exactly 86400 must be allowed"
+    );
+    // One second over: rejected, generic message (no oracle).
+    let mut over = sample_mandate("n_life_over");
+    over.issued_at = now - 10;
+    over.expires_at = over.issued_at + MAX_MANDATE_TTL_SECS + 1;
+    let sig_over = auth.sign(&over).unwrap();
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &over, &sig_over, CAP, &allow, &db),
+            Decision::Reject { reason } if reason.contains("exceeds policy")
+        ),
+        "lifetime 86401 must be rejected"
+    );
+    // 30-day lifetime with a valid signature: still rejected before verify.
+    let mut long = sample_mandate("n_life_30d");
+    long.issued_at = now - 10;
+    long.expires_at = long.issued_at + 30 * 86_400;
+    let sig_long = auth.sign(&long).unwrap();
+    assert!(
+        auth.verify(&long, &sig_long).is_ok(),
+        "test setup: sig must verify"
+    );
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &long, &sig_long, CAP, &allow, &db),
+            Decision::Reject { reason } if reason.contains("exceeds policy")
+        ),
+        "30-day lifetime must be rejected despite valid signature"
+    );
+}
+
+#[test]
 fn stateless_validator_agrees_with_evaluate_without_consuming_nonce() {
     // H11 regression: the idempotency early-cache must apply the same verdict
     // as policy evaluation. validate_stateless has no DB side effect, so it
@@ -306,8 +355,8 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
     assert!(matches!(d1, Decision::Allow { .. }));
     // Simulate velocity failure after evaluate: check_velocity should allow first,
     // but second call within same window should reject.
-    assert!(db.check_velocity("vel-rollback-agent").unwrap()); // first increments to 1 <=1 -> true
-    assert!(!db.check_velocity("vel-rollback-agent").unwrap()); // second increments to 2 >1 -> false (rejected)
+    assert!(db.check_velocity("vel-rollback-agent").unwrap().allowed); // first increments to 1 <=1 -> true
+    assert!(!db.check_velocity("vel-rollback-agent").unwrap().allowed); // second increments to 2 >1 -> false (rejected)
     // The second mandate with same nonce would have already claimed nonce inside evaluate
     // if we tried to evaluate it. To emulate the bug: evaluate claimed nonce, then velocity
     // failed, so we rollback.
@@ -324,7 +373,7 @@ fn velocity_rejection_rolls_back_nonce_so_mandate_is_retryable() {
         "second evaluate should Allow before velocity"
     );
     // Now velocity check fails again -> our fix rolls back nonce
-    let vel_ok = db.check_velocity("vel-rollback-agent").unwrap();
+    let vel_ok = db.check_velocity("vel-rollback-agent").unwrap().allowed;
     assert!(!vel_ok, "velocity should still be exceeded");
     // Emulate app.rs rollback on velocity rejection
     if !vel_ok {
