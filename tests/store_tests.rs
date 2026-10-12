@@ -1,4 +1,4 @@
-use mandatepay::store::{Db, NONCE_RETENTION_SECS, VELOCITY_RETENTION_SECS};
+use mandatepay::store::{Db, NONCE_RETENTION_SECS, PENDING_TTL_SECS, VELOCITY_RETENTION_SECS};
 
 #[test]
 fn agent_crud_and_velocity() {
@@ -122,6 +122,42 @@ fn c2_migration_adds_audit_columns_to_legacy_db() {
         db.get_cached_order("mnd_legacy_1").unwrap().as_deref(),
         Some("order_final_1")
     );
+}
+
+#[test]
+fn v4_migration_adds_reserved_at_and_nonce_to_legacy_orders() {
+    // Legacy DB without orders.status/reserved_at/nonce and with
+    // user_version 0: open must add all columns, set version to 4, and keep
+    // the reservation path working.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy_v4.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE nonces (nonce TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+            CREATE TABLE orders (mandate_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, amount INTEGER NOT NULL, created_at INTEGER NOT NULL);
+            CREATE TABLE agents (agent_id TEXT PRIMARY KEY, max_cap INTEGER NOT NULL DEFAULT 50000, velocity_limit INTEGER NOT NULL DEFAULT 50, velocity_window_secs INTEGER NOT NULL DEFAULT 60, allowed_merchants TEXT NOT NULL DEFAULT '[\"merchant-001\"]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            CREATE TABLE agent_velocity (agent_id TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (agent_id, window_start));
+            ",
+        )
+        .unwrap();
+    }
+    let db = Db::open(path.to_str().unwrap()).unwrap();
+    let version: i64 = {
+        // Re-open raw to read user_version without the Db wrapper.
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(version, 4);
+    assert!(db.try_reserve_order("mnd_v4_1", 500).unwrap());
+    let info = db.get_pending_info("mnd_v4_1").unwrap().unwrap();
+    assert_eq!(info.status, "pending");
+    assert_eq!(info.amount, 500);
+    assert!(info.reserved_at > 0);
+    assert_eq!(PENDING_TTL_SECS, 300);
 }
 
 #[test]

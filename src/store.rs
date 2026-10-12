@@ -54,6 +54,12 @@ pub const NONCE_RETENTION_SECS: u64 = MAX_MANDATE_TTL_SECS + CLOCK_SKEW_SECS + P
 pub const VELOCITY_RETENTION_SECS: u64 = MAX_VELOCITY_WINDOW_SECS + PRUNE_MARGIN_SECS;
 /// Default background prune cadence when `MANDATEPAY_PRUNE_INTERVAL_SECS` is unset.
 pub const DEFAULT_PRUNE_INTERVAL_SECS: u64 = 3_600;
+/// How long a `pending` order reservation is honored before a retry may even
+/// consider reclaiming it. Must comfortably exceed the gateway timeout (10s)
+/// plus connect timeout (5s) so a slow but live attempt can never have its
+/// reservation stolen mid-flight. Stale rows are NEVER reclaimed blindly;
+/// see `try_reserve_order` for the find-before-reclaim contract.
+pub const PENDING_TTL_SECS: u64 = 300;
 
 /// Result of charging one velocity slot: admission plus the exact window row
 /// that was incremented. Persist `window_start` and hand it to
@@ -62,6 +68,18 @@ pub const DEFAULT_PRUNE_INTERVAL_SECS: u64 = 3_600;
 pub struct VelocityOutcome {
     pub allowed: bool,
     pub window_start: u64,
+}
+
+/// Snapshot of a `pending` reservation row for the stale-reclaim contract.
+/// `reserved_at` is when the reservation was taken (or retaken); `nonce` is
+/// the exact nonce claim that owns it; `amount` guards idempotency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInfo {
+    pub order_id: String,
+    pub status: String,
+    pub amount: u64,
+    pub reserved_at: i64,
+    pub nonce: String,
 }
 
 pub struct Db(Mutex<Connection>);
@@ -146,7 +164,9 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'completed'
+    status TEXT NOT NULL DEFAULT 'completed',
+    reserved_at INTEGER NOT NULL DEFAULT 0,
+    nonce TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
@@ -231,6 +251,27 @@ impl Db {
                 [],
             )?;
         }
+        // Migration v4 (phase3): orders.reserved_at + orders.nonce for
+        // stale-pending reclaim. reserved_at records when the pending
+        // reservation was taken; nonce records which nonce claim owns it so
+        // only an identical-mandate retry (same mandate_id + same nonce) may
+        // ever be let past the nonce claim. Existing rows default to 0/'',
+        // i.e. treated as stale — the safe direction (unblocks) since a
+        // pre-upgrade pending could only have come from a crash.
+        let has_reserved = Self::column_exists(&conn, "orders", "reserved_at")?;
+        if !has_reserved {
+            conn.execute(
+                "ALTER TABLE orders ADD COLUMN reserved_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        let has_order_nonce = Self::column_exists(&conn, "orders", "nonce")?;
+        if !has_order_nonce {
+            conn.execute(
+                "ALTER TABLE orders ADD COLUMN nonce TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         let legacy_unkeyed: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM agents WHERE api_key_hash = ''",
@@ -293,6 +334,9 @@ impl Db {
         }
         if version < 2 {
             conn.execute_batch("PRAGMA user_version = 2")?;
+        }
+        if version < 4 {
+            conn.execute_batch("PRAGMA user_version = 4")?;
         }
         Ok(Db(Mutex::new(conn)))
     }
@@ -582,6 +626,21 @@ impl Db {
     // fail-closed (it cannot double-charge) but needs reclaim logic, and
     // reclaim must not ship without a gateway idempotency key.
     pub fn try_reserve_order(&self, mandate_id: &str, amount: u64) -> rusqlite::Result<bool> {
+        self.try_reserve_order_with_nonce_at(mandate_id, amount, "", unix_now())
+            .map(|(reserved, _)| reserved)
+    }
+
+    /// Reservation with explicit owner nonce and clock (tests use this to
+    /// build stale rows deterministically). Stores `reserved_at = now` and
+    /// `nonce` alongside the pending marker. Returns `(reserved, stale)` where
+    /// `stale` is the existing pending info when the insert lost the race.
+    pub fn try_reserve_order_with_nonce_at(
+        &self,
+        mandate_id: &str,
+        amount: u64,
+        nonce: &str,
+        now: u64,
+    ) -> rusqlite::Result<(bool, Option<PendingInfo>)> {
         if amount > i64::MAX as u64 {
             return Err(rusqlite::Error::InvalidParameterName(
                 "amount exceeds i64::MAX".into(),
@@ -589,10 +648,55 @@ impl Db {
         }
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let changed = conn.execute(
-            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status) VALUES (?1, '__PENDING__', ?2, ?3, 'pending')",
-            params![mandate_id, amount as i64, unix_now() as i64],
+            "INSERT OR IGNORE INTO orders (mandate_id, order_id, amount, created_at, status, reserved_at, nonce) VALUES (?1, '__PENDING__', ?2, ?3, 'pending', ?3, ?4)",
+            params![mandate_id, amount as i64, now as i64, nonce],
         )?;
-        Ok(changed > 0)
+        if changed > 0 {
+            return Ok((true, None));
+        }
+        let info = Self::pending_info_locked(&conn, mandate_id)?;
+        Ok((false, info))
+    }
+
+    fn pending_info_locked(
+        conn: &Connection,
+        mandate_id: &str,
+    ) -> rusqlite::Result<Option<PendingInfo>> {
+        let mut stmt = conn.prepare(
+            "SELECT order_id, status, amount, reserved_at, nonce FROM orders WHERE mandate_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![mandate_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let amount_i64: i64 = row.get(2)?;
+        if amount_i64 < 0 {
+            return Err(rusqlite::Error::InvalidColumnType(
+                2,
+                "amount".into(),
+                rusqlite::types::Type::Integer,
+            ));
+        }
+        Ok(Some(PendingInfo {
+            order_id: row.get(0)?,
+            status: row.get(1)?,
+            amount: amount_i64 as u64,
+            reserved_at: row.get(3)?,
+            nonce: row.get(4)?,
+        }))
+    }
+
+    /// Snapshot of the reservation row for `mandate_id`, if any. Read-only.
+    pub fn get_pending_info(&self, mandate_id: &str) -> rusqlite::Result<Option<PendingInfo>> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        Self::pending_info_locked(&conn, mandate_id)
+    }
+
+    /// True when a pending row is old enough to even consider reclaiming.
+    /// Fresh rows must never be stolen. Stale alone never authorizes a
+    /// reclaim — the caller must still run `find_order_by_receipt` first.
+    pub fn is_pending_stale(info: &PendingInfo, now: u64) -> bool {
+        info.status == "pending" && (now as i64 - info.reserved_at) >= PENDING_TTL_SECS as i64
     }
 
     pub fn finalize_reserved_order(
