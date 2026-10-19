@@ -182,8 +182,14 @@ Honesty is the bar — the attack *vectors* above are what `cargo run --bin eval
 
 ## Known limitations
 
-- Public reads are a deliberate demo tradeoff: `GET /v1/decisions*`, `/v1/stats`, `/v1/agents` and the dashboard work without a key so judges can poke the ledger. What protects payloads is H5 redaction — mandate nonces in decision payloads are redacted unless the caller presents the master key. Gate these routes before any production use.
-- `nonces` and `decisions` tables grow without TTL pruning — `store.rs` never deletes expired nonces or mandates. For a demo this is fine; for production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7` and a `decisions` retention job.
+- Legacy pending rows (created before migration v4) carry `orders.nonce = ''` and are never auto-reclaimed: the stale-reclaim path requires the stored nonce to match the retried mandate's nonce. If a checkout gets stuck on such a row, first confirm the gateway has no order for that receipt, then clear it manually (and free the nonce so the retry can proceed):
+  ```sql
+  DELETE FROM orders WHERE mandate_id = '<mandate_id>' AND status = 'pending' AND nonce = '';
+  DELETE FROM nonces WHERE nonce = '<nonce>';
+  ```
+  If the gateway already has the order, finalize the row instead of deleting it: `UPDATE orders SET order_id = '<gateway_order_id>', status = 'completed' WHERE mandate_id = '<mandate_id>' AND status = 'pending'`.
+- Public reads are a deliberate demo tradeoff: `GET /v1/decisions*`, `/v1/stats`, `/v1/agents` and the dashboard work without a key so judges can poke the ledger. What protects payloads is H5 redaction — mandate nonces in decision payloads are redacted unless the caller presents the master key. **Must be gated before any production use.**
+- `nonces`, `decisions` and `agent_velocity` tables grow without retention pruning — `store.rs` exposes `prune_expired` for nonces/agent_velocity but no scheduled job runs it, and `decisions` is never pruned. For production add a nightly `DELETE FROM nonces WHERE claimed_at < now - 86400*7`, a `DELETE FROM agent_velocity WHERE window_start < now - <retention>`, and a `decisions` retention job. (Decisions are the audit trail — retain them at least as long as the hash chain is needed for verification.)
 - Velocity windows are fixed windows aligned to epoch multiples (`window_start = now - now % window`), not sliding windows. Budgets reset on window boundaries by design; see `check_velocity`.
 
 ## License
