@@ -437,16 +437,24 @@ fn issued_at_future_leeway_rejects_large_skew_but_allows_small() {
         ),
         "issued_at 30s in future (within 60s leeway) should be allowed"
     );
-    // Large skew (65s in future) should be rejected (61s is flaky due to 1s clock drift between test and policy)
+    // Large skew (10 minutes in future) should be rejected before signature verify
     let mut m_bad = sample_mandate("n_future_bad");
-    m_bad.issued_at = now + 65;
+    m_bad.issued_at = now + 600;
     m_bad.expires_at = now + 3600;
     let sig_bad = auth.sign(&m_bad).unwrap();
     assert!(
         matches!(
             policy::evaluate(&auth, &m_bad, &sig_bad, CAP, &allow, &db),
-            Decision::Reject { reason } if reason.contains("too far in the future")
+            Decision::Reject { reason } if reason == "issued_at is in the future"
         ),
-        "issued_at 65s in future should be rejected"
+        "issued_at 10 minutes in future should be rejected"
+    );
+    // Gate order: the future check runs before signature verification.
+    assert!(
+        matches!(
+            policy::evaluate(&auth, &m_bad, "not-a-signature", CAP, &allow, &db),
+            Decision::Reject { reason } if reason == "issued_at is in the future"
+        ),
+        "future-dated mandate must be rejected before signature verify"
     );
 }

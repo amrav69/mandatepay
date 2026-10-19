@@ -1,6 +1,9 @@
 use crate::mandates::{Authority, Mandate, unix_now};
 use crate::store::{Db, MAX_MANDATE_TTL_SECS};
 
+/// Leeway for clock skew when checking a mandate's `issued_at`.
+pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
+
 pub enum Decision {
     Allow { reason: String },
     Reject { reason: String },
@@ -46,9 +49,8 @@ pub fn validate_stateless(
     if mandate.agent_id.trim().is_empty() || mandate.merchant_id.trim().is_empty() {
         return reject("agent_id and merchant_id are required");
     }
-    // 60s leeway for clock skew; beyond that reject future-dated mandates.
-    if mandate.issued_at > unix_now().saturating_add(60) {
-        return reject("issued_at is too far in the future");
+    if mandate.issued_at > unix_now().saturating_add(MAX_CLOCK_SKEW_SECS) {
+        return reject("issued_at is in the future");
     }
     if unix_now() >= mandate.expires_at {
         return reject("mandate expired");
