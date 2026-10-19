@@ -368,8 +368,7 @@ pub async fn checkout(
     // nonce row is never freed. A stale row is NEVER reclaimed blindly: we
     // always call find_order_by_receipt first (no DB lock held across await).
     let mut reclaimed_fresh = false;
-    if matches!(&decision, Decision::Reject { reason } if reason.contains("nonce already consumed"))
-    {
+    if matches!(&decision, Decision::Replay { .. }) {
         let now = mandates::unix_now();
         if let Ok(Some(info)) = state.db.get_pending_info(&req.mandate.mandate_id) {
             let identical = info.nonce == req.mandate.nonce && info.amount == req.amount_minor;
@@ -469,6 +468,7 @@ pub async fn checkout(
     let (mut label, mut reason) = match &decision {
         Decision::Allow { reason } => ("ALLOW", reason.clone()),
         Decision::Reject { reason } => ("REJECT", reason.clone()),
+        Decision::Replay { reason } => ("REJECT", reason.clone()),
     };
 
     let mut order_id = None;

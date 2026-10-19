@@ -628,6 +628,9 @@ fn prune_replay_of_expired_mandate_still_rejected() {
             reason.contains("expired"),
             "pruned-but-expired replay must still fail on expiry, got {reason}"
         ),
+        Decision::Replay { reason } => {
+            panic!("expired mandate must be rejected on expiry before the nonce gate, got {reason}")
+        }
         Decision::Allow { .. } => panic!("expired mandate must never Allow after prune"),
     }
 }

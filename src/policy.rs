@@ -5,8 +5,17 @@ use crate::store::{Db, MAX_MANDATE_TTL_SECS};
 pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
 
 pub enum Decision {
-    Allow { reason: String },
-    Reject { reason: String },
+    Allow {
+        reason: String,
+    },
+    Reject {
+        reason: String,
+    },
+    /// Replay of a consumed nonce: distinguishable from policy rejections so
+    /// callers never have to match on the human-readable reason.
+    Replay {
+        reason: String,
+    },
 }
 
 fn reject(reason: impl Into<String>) -> Decision {
@@ -98,7 +107,11 @@ pub fn evaluate(
 
     match db.try_claim_nonce(&mandate.nonce) {
         Ok(true) => {}
-        Ok(false) => return reject("nonce already consumed: possible replay"),
+        Ok(false) => {
+            return Decision::Replay {
+                reason: "nonce already consumed: possible replay".into(),
+            };
+        }
         Err(e) => return reject(format!("nonce ledger failure: {e}")),
     }
 

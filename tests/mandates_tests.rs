@@ -265,7 +265,7 @@ fn stateless_validator_agrees_with_evaluate_without_consuming_nonce() {
     ));
     assert!(matches!(
         policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
-        Decision::Reject { .. }
+        Decision::Replay { .. }
     ));
 }
 
@@ -283,7 +283,7 @@ fn replayed_nonce_rejected_second_time() {
     assert!(
         matches!(
             policy::evaluate(&auth, &m, &sig, CAP, &allow, &db),
-            Decision::Reject { reason } if reason.contains("replay")
+            Decision::Replay { reason } if reason.contains("replay")
         ),
         "second evaluation must be rejected as replay"
     );
