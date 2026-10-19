@@ -17,6 +17,10 @@ use std::sync::Arc;
 use tower::util::ServiceExt;
 
 fn mock_app() -> (axum::Router, Arc<AppState>, String) {
+    mock_app_with_gateway(Gateway::mock())
+}
+
+fn mock_app_with_gateway(gateway: Gateway) -> (axum::Router, Arc<AppState>, String) {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).expect("os randomness unavailable");
@@ -26,7 +30,7 @@ fn mock_app() -> (axum::Router, Arc<AppState>, String) {
     let state = Arc::new(AppState {
         authority,
         db,
-        gateway: Gateway::mock(),
+        gateway,
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
     });
@@ -295,5 +299,57 @@ async fn different_mandate_same_nonce_stays_replay() {
     // No order for the forged id, original nonce never freed.
     assert!(state.db.get_order_status(&b.mandate_id).unwrap().is_none());
     assert!(!state.db.try_claim_nonce(&nonce).unwrap());
+    assert!(state.db.verify_chain().unwrap());
+}
+
+/// Two concurrent identical retries both find the same gateway order and race
+/// on finalizing the pending row. Only the caller whose UPDATE changes the row
+/// may write the decision; the loser returns the same ALLOW + order_id without
+/// a second row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_adopts_of_same_order_write_single_decision() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let (app, state, master) = mock_app_with_gateway(Gateway::mock_with_find_barrier_for_tests(
+        Arc::clone(&barrier),
+    ));
+    let agent = "reclaim-adopt-race";
+    let agent_key = ensure_agent_key(&app, &master, agent).await;
+    let (mandate, sig) = issue(&app, &agent_key, agent).await;
+    let mid = mandate["mandate_id"].as_str().unwrap().to_string();
+    let nonce = mandate["nonce"].as_str().unwrap().to_string();
+    crash_with_stale_pending(&state, &mid, &nonce, 1000);
+    let m: Mandate = serde_json::from_value(mandate.clone()).unwrap();
+    let created = state.gateway.create_order(&m, 1000).await.unwrap();
+    assert_eq!(state.gateway.mock_create_count(), 1);
+
+    let spawn_checkout = |app: axum::Router, key: String, mandate: Value, sig: String| {
+        tokio::spawn(async move { checkout(&app, &key, &mandate, &sig).await })
+    };
+    let h1 = spawn_checkout(app.clone(), agent_key.clone(), mandate.clone(), sig.clone());
+    let h2 = spawn_checkout(app.clone(), agent_key.clone(), mandate.clone(), sig.clone());
+    // Both retries are parked inside find_order_by_receipt; release together.
+    barrier.wait().await;
+    let (s1, b1) = h1.await.unwrap();
+    let (s2, b2) = h2.await.unwrap();
+
+    assert_eq!(s1, StatusCode::OK);
+    assert_eq!(s2, StatusCode::OK);
+    for body in [&b1, &b2] {
+        assert_eq!(body["decision"], "ALLOW");
+        assert_eq!(body["order_id"].as_str().unwrap(), created.id.as_str());
+    }
+    assert_eq!(state.gateway.mock_create_count(), 1);
+    let checkouts: Vec<_> = state
+        .db
+        .list_recent(10)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.endpoint == "/v1/checkout")
+        .collect();
+    assert_eq!(checkouts.len(), 1, "exactly one decision row");
+    assert_eq!(checkouts[0].decision, "ALLOW");
+    let (oid, st) = state.db.get_order_status(&mid).unwrap().unwrap();
+    assert_eq!(oid, created.id);
+    assert_eq!(st, "completed");
     assert!(state.db.verify_chain().unwrap());
 }

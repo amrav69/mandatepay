@@ -118,6 +118,10 @@ pub enum Gateway {
     Mock {
         store: Arc<Mutex<HashMap<String, Vec<GatewayOrder>>>>,
         creates: Arc<std::sync::atomic::AtomicU64>,
+        /// Test-only: when set, `find_order_by_receipt` waits on this barrier
+        /// so concurrent adopters can be released together. Always `None` in
+        /// production (`Gateway::mock`/`Gateway::from_env`).
+        find_barrier: Option<Arc<tokio::sync::Barrier>>,
     },
     Razorpay {
         key_id: String,
@@ -212,6 +216,18 @@ impl Gateway {
         Gateway::Mock {
             store: Arc::new(Mutex::new(HashMap::new())),
             creates: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            find_barrier: None,
+        }
+    }
+
+    /// Test-only mock whose `find_order_by_receipt` rendezvous on `barrier`.
+    /// The barrier has as many parties as concurrent adopters plus the test,
+    /// so the race below `find` is deterministic (no sleeps).
+    pub fn mock_with_find_barrier_for_tests(barrier: Arc<tokio::sync::Barrier>) -> Self {
+        Gateway::Mock {
+            store: Arc::new(Mutex::new(HashMap::new())),
+            creates: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            find_barrier: Some(barrier),
         }
     }
 
@@ -306,7 +322,7 @@ impl Gateway {
         amount_minor: u64,
     ) -> Result<GatewayOrder, GatewayError> {
         match self {
-            Gateway::Mock { store, creates } => {
+            Gateway::Mock { store, creates, .. } => {
                 check_receipt(&mandate.mandate_id)?;
                 creates.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let order = GatewayOrder {
@@ -432,7 +448,14 @@ impl Gateway {
     ) -> Result<Option<GatewayOrder>, GatewayError> {
         check_receipt(mandate_id)?;
         match self {
-            Gateway::Mock { store, .. } => {
+            Gateway::Mock {
+                store,
+                find_barrier,
+                ..
+            } => {
+                if let Some(barrier) = find_barrier {
+                    let _ = barrier.wait().await;
+                }
                 let guard = store
                     .lock()
                     .map_err(|e| GatewayError::Internal(format!("mock store poisoned: {e}")))?;

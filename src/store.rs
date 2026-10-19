@@ -745,17 +745,20 @@ impl Db {
         Ok(changed > 0)
     }
 
+    /// Mark the pending row completed for `mandate_id`. Returns `true` only for
+    /// the caller whose `UPDATE` actually changed a pending row, so concurrent
+    /// adopters of the same gateway order can decide who records the audit row.
     pub fn finalize_reserved_order(
         &self,
         mandate_id: &str,
         order_id: &str,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<bool> {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE orders SET order_id = ?1, status = 'completed' WHERE mandate_id = ?2 AND status = 'pending'",
             params![order_id, mandate_id],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     pub fn clear_pending_order(&self, mandate_id: &str) -> rusqlite::Result<()> {

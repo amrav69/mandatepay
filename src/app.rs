@@ -380,18 +380,36 @@ pub async fn checkout(
                 {
                     Ok(Some(order)) => {
                         if order.amount == req.amount_minor {
-                            if let Err(e) = state
+                            let adopt_reason = "reclaimed stale pending: adopted gateway order";
+                            match state
                                 .db
                                 .finalize_reserved_order(&req.mandate.mandate_id, &order.id)
                             {
-                                tracing::error!(error = %e, mandate_id = %req.mandate.mandate_id, "failed to finalize adopted order after stale reclaim");
+                                Ok(true) => {
+                                    // We won the pending -> completed CAS: only
+                                    // this caller records the audit row.
+                                    let payload = mandate_payload_json(&req.mandate)?;
+                                    state
+                                        .db
+                                        .record_decision(
+                                            "/v1/checkout",
+                                            "ALLOW",
+                                            adopt_reason,
+                                            &payload,
+                                        )
+                                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                                }
+                                Ok(false) => {
+                                    // A concurrent identical retry already
+                                    // adopted and recorded this same order;
+                                    // return the same ALLOW without a second row.
+                                }
+                                Err(e) => {
+                                    return Err(AppError::Internal(format!(
+                                        "failed to finalize adopted order: {e}"
+                                    )));
+                                }
                             }
-                            let payload = mandate_payload_json(&req.mandate)?;
-                            let adopt_reason = "reclaimed stale pending: adopted gateway order";
-                            state
-                                .db
-                                .record_decision("/v1/checkout", "ALLOW", adopt_reason, &payload)
-                                .map_err(|e| AppError::Internal(e.to_string()))?;
                             return Ok(Json(DecisionResponse {
                                 decision: "ALLOW".into(),
                                 reason: adopt_reason.into(),
