@@ -10,6 +10,7 @@ description = "Human-signed, cart-bound spend mandates for AI agents. The agent 
 base64 = "0.23.1"
 ed25519-dalek = "3.0.0"
 hex = "0.4.3"
+p256 = { version = "0.14", features = ["ecdsa"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_jcs = "0.2.0"
 serde_json = "1.0.151"
