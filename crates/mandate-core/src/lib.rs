@@ -21,4 +21,4 @@ mod types;
 pub use canonical::{cart_hash, intent_hash};
 pub use checkout::{ApprovalVerifier, Approved, Ed25519Principal, verify_checkout};
 pub use error::Reject;
-pub use types::{CartItem, CartMandate, IntentMandate, PrincipalApproval, CURRENCY, VERSION};
+pub use types::{CURRENCY, CartItem, CartMandate, IntentMandate, PrincipalApproval, VERSION};
