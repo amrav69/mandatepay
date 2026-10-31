@@ -86,6 +86,10 @@ impl ApprovalVerifier for PasskeyPrincipal {
         if field("origin") != Some(self.origin.as_str()) {
             return Err(Reject::Approval);
         }
+        // Approvals must come from our own page, never an iframe on another site.
+        if cd.get("crossOrigin").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Err(Reject::Approval);
+        }
 
         if auth.len() < 37 {
             return Err(Reject::Approval);

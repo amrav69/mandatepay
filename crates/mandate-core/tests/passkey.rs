@@ -11,13 +11,19 @@ use p256::ecdsa::{SigningKey, signature::Signer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const PRINCIPAL_ID: &str = "passkey-shanmukh";
+const PRINCIPAL_ID: &str = "passkey-ram";
 const CREDENTIAL_ID: &str = "ZmFrZS1jcmVkZW50aWFsLWlk";
 const RP_ID: &str = "mandatepay.example";
 const ORIGIN: &str = "https://mandatepay.example";
 const NOW: u64 = 1_800_000_000;
 const UP: u8 = 0x01;
 const UV: u8 = 0x04;
+
+/// P-256 curve order n (big-endian), for the high-S signature test.
+const P256_ORDER: [u8; 32] = [
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+];
 
 /// The 26-byte SPKI DER prefix for an uncompressed P-256 EC public key.
 const SPKI_P256_PREFIX: [u8; 26] = [
@@ -65,14 +71,23 @@ fn auth_data(flags: u8, counter: u32) -> Vec<u8> {
     auth_data_for(RP_ID, flags, counter)
 }
 
-/// Client data JSON the browser would produce for this challenge.
-fn client_data(challenge: &[u8; 32], typ: &str, origin: &str) -> String {
-    json!({
+/// Client data JSON the browser would produce for this challenge. The
+/// `crossOrigin` field is present only when `cross_origin` is `Some`.
+fn client_data(
+    challenge: &[u8; 32],
+    typ: &str,
+    origin: &str,
+    cross_origin: Option<bool>,
+) -> String {
+    let mut value = json!({
         "type": typ,
         "challenge": b64u(challenge),
         "origin": origin,
-    })
-    .to_string()
+    });
+    if let Some(flag) = cross_origin {
+        value["crossOrigin"] = json!(flag);
+    }
+    value.to_string()
 }
 
 /// DER-encode a raw r||s ECDSA signature: SEQ { INTEGER r, INTEGER s }.
@@ -98,6 +113,25 @@ fn der_encode(raw: &[u8]) -> Vec<u8> {
     out
 }
 
+/// `n - s` for a 32-byte big-endian value, with borrow, byte by byte.
+fn order_minus(s: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let mut borrow: i32 = 0;
+    for i in (0..32).rev() {
+        let diff = P256_ORDER[i] as i32 - s[i] as i32 - borrow;
+        out[i] = diff as u8;
+        borrow = (diff < 0) as i32;
+    }
+    out
+}
+
+/// Replace s with n - s: what half of all real authenticator signatures look like.
+fn high_s(raw: &[u8]) -> Vec<u8> {
+    let mut flipped = raw.to_vec();
+    flipped[32..].copy_from_slice(&order_minus(&raw[32..]));
+    flipped
+}
+
 /// The human approves with an assertion over `auth || sha256(client_data_json)`.
 fn approval_of(
     key: &SigningKey,
@@ -105,11 +139,24 @@ fn approval_of(
     client_data_json: &str,
     principal_id: &str,
 ) -> PrincipalApproval {
+    approval_remapped(key, auth, client_data_json, principal_id, |raw| {
+        raw.to_vec()
+    })
+}
+
+/// [`approval_of`], but `remap` transforms the raw r||s signature first.
+fn approval_remapped(
+    key: &SigningKey,
+    auth: &[u8],
+    client_data_json: &str,
+    principal_id: &str,
+    remap: impl Fn(&[u8]) -> Vec<u8>,
+) -> PrincipalApproval {
     let mut message = auth.to_vec();
     let cd_hash: [u8; 32] = Sha256::digest(client_data_json.as_bytes()).into();
     message.extend_from_slice(&cd_hash);
     let sig: p256::ecdsa::Signature = key.sign(&message);
-    let der = der_encode(&sig.to_vec());
+    let der = der_encode(&remap(&sig.to_vec()));
     let bundle = json!({
         "credential_id": CREDENTIAL_ID,
         "authenticator_data": b64u(auth),
@@ -128,7 +175,7 @@ fn approval_for(w: &World) -> PrincipalApproval {
     approval_of(
         &passkey(),
         &auth_data(UP | UV, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     )
 }
@@ -172,7 +219,7 @@ fn world() -> World {
     let approval = approval_of(
         &passkey(),
         &auth_data(UP | UV, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     let cart = CartMandate {
@@ -219,7 +266,7 @@ fn wrong_challenge_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data(UP | UV, 1),
-        &client_data(&[9u8; 32], "webauthn.get", ORIGIN),
+        &client_data(&[9u8; 32], "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -232,7 +279,7 @@ fn wrong_origin_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data(UP | UV, 1),
-        &client_data(&hash, "webauthn.get", "https://evil.example"),
+        &client_data(&hash, "webauthn.get", "https://evil.example", None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -245,7 +292,7 @@ fn wrong_type_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data(UP | UV, 1),
-        &client_data(&hash, "webauthn.create", ORIGIN),
+        &client_data(&hash, "webauthn.create", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -258,7 +305,7 @@ fn wrong_rp_id_hash_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data_for("evil.example", UP | UV, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -271,7 +318,7 @@ fn missing_up_flag_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data(UV, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -284,10 +331,50 @@ fn missing_uv_flag_fails() {
     let approval = approval_of(
         &passkey(),
         &auth_data(UP, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
+}
+
+#[test]
+fn cross_origin_true_fails() {
+    let w = world();
+    let hash = intent_hash(&w.intent).unwrap();
+    let approval = approval_of(
+        &passkey(),
+        &auth_data(UP | UV, 1),
+        &client_data(&hash, "webauthn.get", ORIGIN, Some(true)),
+        PRINCIPAL_ID,
+    );
+    assert_eq!(run(&w, &approval), Err(Reject::Approval));
+}
+
+#[test]
+fn cross_origin_false_passes() {
+    let w = world();
+    let hash = intent_hash(&w.intent).unwrap();
+    let approval = approval_of(
+        &passkey(),
+        &auth_data(UP | UV, 1),
+        &client_data(&hash, "webauthn.get", ORIGIN, Some(false)),
+        PRINCIPAL_ID,
+    );
+    assert_eq!(run(&w, &approval), Ok(()));
+}
+
+#[test]
+fn high_s_signature_passes() {
+    let w = world();
+    let hash = intent_hash(&w.intent).unwrap();
+    let approval = approval_remapped(
+        &passkey(),
+        &auth_data(UP | UV, 1),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
+        PRINCIPAL_ID,
+        high_s,
+    );
+    assert_eq!(run(&w, &approval), Ok(()));
 }
 
 #[test]
@@ -334,7 +421,7 @@ fn signed_by_a_different_key_fails() {
     let approval = approval_of(
         &other,
         &auth_data(UP | UV, 1),
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
@@ -371,7 +458,7 @@ fn short_authenticator_data_fails() {
     let approval = approval_of(
         &passkey(),
         short,
-        &client_data(&hash, "webauthn.get", ORIGIN),
+        &client_data(&hash, "webauthn.get", ORIGIN, None),
         PRINCIPAL_ID,
     );
     assert_eq!(run(&w, &approval), Err(Reject::Approval));
