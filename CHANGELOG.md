@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased (branch `v0.2`)
+
+### Why v0.2
+In v0.1 the agent requested its own mandate with its own API key, and the server signed it. No human ever approved a spend, so a stolen agent key could create and spend mandates up to the server cap. Rate limits counted requests, not rupees, and mandates were not tied to what was being bought.
+
+v0.2 moves the pen to the human:
+- **IntentMandate**: the agent drafts it and the human approves it (a passkey in phase 2). It sets the merchants, a per-order cap, a total rupee budget and an expiry. The server holds only the human's public key, so it cannot approve anything.
+- **CartMandate**: the exact items and total, signed by the agent's own key and linked to the approved intent by its hash.
+- `verify_checkout()` in `crates/mandate-core` is one pure function, with 21 tests covering one attack each.
+
+### Added
+- `crates/mandate-core`: intent and cart mandate types, domain-separated JCS hashing, the `ApprovalVerifier` trait, and an Ed25519 principal verifier. The WebAuthn verifier lands in phase 2.
+
+### Not yet changed
+- The server (`src/`) still runs the v0.1 flow. It moves onto mandate-core in phase 3.
+
+## [0.1.2] - 2026-08-31 (Razorpay AI Buildathon submission)
+
+### Fixed
+- TOCTOU race in the velocity limit engine
+- `allowed_merchants` stored as safely parsed JSON arrays
+
+### Added
+- `TESTING.md` coverage requirements
+- CI: fmt, clippy -D warnings, tests, tarpaulin (60%), cargo-audit, live attack suite
+
+Note: the v0.1.0 and v0.1.2 release notes say "9-gate policy engine"; the policy actually has 13 gates (listed below).
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

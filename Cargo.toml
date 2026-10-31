@@ -31,3 +31,6 @@ validator = { version = "0.21.0", features = ["derive"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"
 tower = "0.5.3"
+
+[workspace]
+members = [".", "crates/mandate-core"]
