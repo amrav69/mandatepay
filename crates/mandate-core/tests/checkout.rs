@@ -70,11 +70,26 @@ fn world() -> World {
         nonce: "n_cart_1".into(),
     };
     let cart_sig = sign_cart(&agent, &cart);
-    World { human, agent, intent, approval, cart, cart_sig }
+    World {
+        human,
+        agent,
+        intent,
+        approval,
+        cart,
+        cart_sig,
+    }
 }
 
 fn run(w: &World, spent: u64) -> Result<Approved, Reject> {
-    verify_checkout(&w.intent, &w.approval, &principal(w), &w.cart, &w.cart_sig, spent, NOW)
+    verify_checkout(
+        &w.intent,
+        &w.approval,
+        &principal(w),
+        &w.cart,
+        &w.cart_sig,
+        spent,
+        NOW,
+    )
 }
 
 /// Re-sign the cart after editing it, as an honest-but-buggy agent would.
@@ -87,7 +102,11 @@ fn happy_path() {
     let w = world();
     assert_eq!(
         run(&w, 0),
-        Ok(Approved { amount_minor: 45_000, merchant_id: "merchant-001".into(), cart_nonce: "n_cart_1".into() })
+        Ok(Approved {
+            amount_minor: 45_000,
+            merchant_id: "merchant-001".into(),
+            cart_nonce: "n_cart_1".into()
+        })
     );
 }
 
