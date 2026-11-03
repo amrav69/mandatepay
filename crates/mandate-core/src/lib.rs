@@ -17,10 +17,12 @@ mod canonical;
 mod checkout;
 mod error;
 pub mod passkey;
+pub mod registration;
 mod types;
 
 pub use canonical::{cart_hash, intent_hash};
 pub use checkout::{ApprovalVerifier, Approved, Ed25519Principal, verify_checkout};
 pub use error::Reject;
 pub use passkey::{PasskeyAssertion, PasskeyPrincipal};
+pub use registration::{RegistrationInput, verify_registration};
 pub use types::{CURRENCY, CartItem, CartMandate, IntentMandate, PrincipalApproval, VERSION};

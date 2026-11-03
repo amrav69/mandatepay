@@ -51,10 +51,38 @@ pub struct PasskeyAssertion {
 }
 
 /// Decodes base64url, tolerating trailing padding (`=`) for lenient clients.
-fn b64url(s: &str) -> Result<Vec<u8>, Reject> {
+pub(crate) fn b64url(s: &str) -> Result<Vec<u8>, Reject> {
     URL_SAFE_NO_PAD
         .decode(s.trim().trim_end_matches('='))
         .map_err(|_| Reject::Approval)
+}
+
+/// The client-data checks every WebAuthn ceremony shares: type, challenge,
+/// origin, and that it is not cross-origin. `expected_type` distinguishes
+/// registration ("webauthn.create") from an approval ("webauthn.get").
+pub(crate) fn check_client_data(
+    client_data: &[u8],
+    expected_type: &str,
+    challenge: &[u8; 32],
+    origin: &str,
+) -> Result<(), Reject> {
+    let cd: serde_json::Value =
+        serde_json::from_slice(client_data).map_err(|_| Reject::Approval)?;
+    let field = |key: &str| cd.get(key).and_then(serde_json::Value::as_str);
+    if field("type") != Some(expected_type) {
+        return Err(Reject::Approval);
+    }
+    if field("challenge") != Some(URL_SAFE_NO_PAD.encode(challenge).as_str()) {
+        return Err(Reject::Approval);
+    }
+    if field("origin") != Some(origin) {
+        return Err(Reject::Approval);
+    }
+    // Approvals must come from our own page, never an iframe on another site.
+    if cd.get("crossOrigin").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(Reject::Approval);
+    }
+    Ok(())
 }
 
 impl ApprovalVerifier for PasskeyPrincipal {
@@ -73,23 +101,7 @@ impl ApprovalVerifier for PasskeyPrincipal {
         let auth = b64url(&assertion.authenticator_data)?;
         let client_data = b64url(&assertion.client_data_json)?;
         let der_sig = b64url(&assertion.signature)?;
-        let cd: serde_json::Value =
-            serde_json::from_slice(&client_data).map_err(|_| Reject::Approval)?;
-        let field = |key: &str| cd.get(key).and_then(serde_json::Value::as_str);
-
-        if field("type") != Some("webauthn.get") {
-            return Err(Reject::Approval);
-        }
-        if field("challenge") != Some(URL_SAFE_NO_PAD.encode(intent_hash).as_str()) {
-            return Err(Reject::Approval);
-        }
-        if field("origin") != Some(self.origin.as_str()) {
-            return Err(Reject::Approval);
-        }
-        // Approvals must come from our own page, never an iframe on another site.
-        if cd.get("crossOrigin").and_then(serde_json::Value::as_bool) == Some(true) {
-            return Err(Reject::Approval);
-        }
+        check_client_data(&client_data, "webauthn.get", intent_hash, &self.origin)?;
 
         if auth.len() < 37 {
             return Err(Reject::Approval);
