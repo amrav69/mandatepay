@@ -22,6 +22,7 @@ const UV: u8 = 0x04;
 
 /// A principal whose approval key is a passkey credential's public key.
 /// The server holds only the public half.
+#[derive(Debug, Clone)]
 pub struct PasskeyPrincipal {
     /// Which human this is; must match the intent and the approval.
     pub principal_id: String,

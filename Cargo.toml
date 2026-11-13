@@ -14,6 +14,7 @@ dotenvy = "0.15.7"
 ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 hex = "0.4.3"
+mandate-core = { path = "crates/mandate-core" }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -28,6 +29,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 validator = { version = "0.21.0", features = ["derive"] }
 
 [dev-dependencies]
+p256 = { version = "0.14", features = ["ecdsa"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"
 tower = "0.5.3"

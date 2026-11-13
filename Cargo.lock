@@ -1076,6 +1076,8 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hex",
+ "mandate-core",
+ "p256",
  "proptest",
  "reqwest",
  "rusqlite",

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use mandatepay::{
-    app::{build_router, parse_max_cap, parse_prune_interval_secs},
+    app::{build_router, parse_max_cap, parse_origin, parse_prune_interval_secs, parse_rp_id},
     auth::resolve_api_key,
     gateway::Gateway,
     mandates::{self, Authority},
@@ -63,6 +63,8 @@ async fn main() {
         gateway,
         api_key: api_key.clone(),
         max_mandate_cap,
+        rp_id: parse_rp_id(),
+        origin: parse_origin(),
     });
 
     // PORT 3: hourly background prune (interval via MANDATEPAY_PRUNE_INTERVAL_SECS).

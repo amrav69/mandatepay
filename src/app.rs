@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, Query, Request, State},
-    http::{HeaderValue, Method},
+    http::{HeaderValue, Method, StatusCode},
     middleware::Next,
     response::{Html, IntoResponse},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use mandate_core::{RegistrationInput, verify_registration};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use validator::Validate;
@@ -34,6 +37,12 @@ pub struct AppState {
     /// Master/admin key for `/v1/agents*` management only; never valid for mandates/checkout.
     pub api_key: String,
     pub max_mandate_cap: u64,
+    /// WebAuthn relying-party id (`RP_ID`, default "localhost"); hashed into
+    /// authenticator data and checked on every ceremony.
+    pub rp_id: String,
+    /// Browser origin the register page must match (`ORIGIN`, default
+    /// "http://localhost:8080"); verified against client data exactly.
+    pub origin: String,
 }
 
 #[derive(Deserialize, Validate)]
@@ -96,6 +105,32 @@ pub fn parse_max_cap() -> u64 {
             }
         },
         _ => 100_000,
+    }
+}
+
+/// WebAuthn relying-party id (`RP_ID`, default "localhost"). A blank value
+/// falls back to the default; there is no meaningful garbage check for text.
+pub fn parse_rp_id() -> String {
+    match std::env::var("RP_ID") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        Ok(_) => {
+            tracing::warn!("RP_ID is blank, falling back to localhost");
+            "localhost".to_string()
+        }
+        Err(_) => "localhost".to_string(),
+    }
+}
+
+/// Browser origin the register page must match (`ORIGIN`, default
+/// "http://localhost:8080"). A blank value falls back with a warning.
+pub fn parse_origin() -> String {
+    match std::env::var("ORIGIN") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        Ok(_) => {
+            tracing::warn!("ORIGIN is blank, falling back to http://localhost:8080");
+            "http://localhost:8080".to_string()
+        }
+        Err(_) => "http://localhost:8080".to_string(),
     }
 }
 
@@ -957,6 +992,233 @@ pub async fn dashboard() -> impl IntoResponse {
     Html(html)
 }
 
+/// Registration challenges live 5 minutes: enough to reach for a passkey.
+const REGISTER_CHALLENGE_TTL_SECS: u64 = 300;
+
+/// Purpose tag distinguishing registration challenges from other ceremonies.
+const REGISTER_PURPOSE: &str = "register";
+
+/// Base64url with no padding: the exact encoding WebAuthn clients produce.
+fn b64url_encode(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Body of POST /v1/passkeys/register/options.
+#[derive(Deserialize)]
+pub struct PasskeyOptionsRequest {
+    pub principal_id: String,
+}
+
+/// Reply to POST /v1/passkeys/register/options.
+#[derive(Serialize)]
+pub struct PasskeyOptions {
+    /// Opaque id the client must echo back on the register call.
+    pub challenge_id: String,
+    /// The 32-byte challenge, base64url without padding.
+    pub challenge: String,
+    /// WebAuthn relying-party id the browser must scope the credential to.
+    pub rp_id: String,
+    /// The user handle the browser stores: base64url of the principal id.
+    pub user_id: String,
+}
+
+/// Body of POST /v1/passkeys/register: which challenge is being consumed and
+/// the raw browser registration response.
+#[derive(Deserialize)]
+pub struct PasskeyRegisterRequest {
+    pub challenge_id: String,
+    pub input: RegistrationInput,
+}
+
+/// Issue a single-use registration challenge (master-gated). The challenge
+/// bytes stay server-side; the client sees base64url of them plus the rp id.
+pub async fn passkey_register_options(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PasskeyOptionsRequest>,
+) -> Result<Json<PasskeyOptions>, AppError> {
+    let principal_id = body.principal_id.trim().to_string();
+    if principal_id.is_empty() {
+        return Err(AppError::BadRequest("principal_id required".into()));
+    }
+    let (challenge_id, challenge) = state
+        .db
+        .create_challenge(REGISTER_PURPOSE, REGISTER_CHALLENGE_TTL_SECS)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(PasskeyOptions {
+        challenge_id,
+        challenge: b64url_encode(&challenge),
+        rp_id: state.rp_id.clone(),
+        user_id: b64url_encode(principal_id.as_bytes()),
+    }))
+}
+
+/// Verify and store a passkey registration (master-gated). Steps, in order:
+/// consume the single-use challenge, verify the browser response purely in
+/// mandate-core, insert the principal. Every verification failure is a uniform
+/// 400 with no detail (nothing leaks about why); a duplicate credential is 409.
+pub async fn passkey_register(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    let parsed: PasskeyRegisterRequest = serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("registration rejected".into()))?;
+    let now = mandates::unix_now();
+    let Some(challenge) =
+        state
+            .db
+            .take_challenge(parsed.challenge_id.trim(), REGISTER_PURPOSE, now)
+    else {
+        return Err(AppError::BadRequest("registration rejected".into()));
+    };
+    let principal = verify_registration(&parsed.input, &challenge, &state.rp_id, &state.origin)
+        .map_err(|_| AppError::BadRequest("registration rejected".into()))?;
+    let inserted = state
+        .db
+        .insert_passkey(&principal)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if !inserted {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "credential already registered" })),
+        ));
+    }
+    tracing::info!(
+        principal_id = %principal.principal_id,
+        credential_id = %principal.credential_id,
+        "passkey registered"
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "status": "registered",
+            "credential_id": principal.credential_id,
+        })),
+    ))
+}
+
+/// The inline registration page served at GET /register. Plain HTML and JS:
+/// no framework, no CDN. The master key lives only in this tab's memory and
+/// is sent as the x-api-key header; it is never stored or placed in a URL.
+const REGISTRATION_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MandatePay passkey registration</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1rem; }
+  label { display: block; margin: 0.75rem 0; font-weight: 600; }
+  input { display: block; width: 100%; margin-top: 0.25rem; padding: 0.5rem; box-sizing: border-box; }
+  button { margin-top: 1rem; padding: 0.6rem 1.2rem; }
+  pre { background: #f4f4f4; padding: 0.75rem; white-space: pre-wrap; word-break: break-all; min-height: 2rem; }
+</style>
+</head>
+<body>
+<h1>Register a passkey</h1>
+<p>Creates a passkey bound to a principal id. The master key is kept in this
+tab only and sent as the x-api-key header; it is never stored or sent in a URL.</p>
+<label>Master key
+  <input id="key" type="password" autocomplete="off">
+</label>
+<label>Principal id
+  <input id="principal" type="text" autocomplete="off">
+</label>
+<button id="go">Register passkey</button>
+<pre id="out">idle</pre>
+<script>
+"use strict";
+const out = document.getElementById("out");
+
+function log(message) {
+  out.textContent = message;
+}
+
+// Base64url without padding: what the server expects for every field.
+function b64url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+// Decode the server's base64url challenge into bytes the browser can use.
+function bytesFromB64url(text) {
+  let padded = text.replaceAll("-", "+").replaceAll("_", "/");
+  while (padded.length % 4 !== 0) padded += "=";
+  const raw = atob(padded);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+document.getElementById("go").addEventListener("click", async () => {
+  const key = document.getElementById("key").value;
+  const principalId = document.getElementById("principal").value.trim();
+  if (!key || !principalId) {
+    log("master key and principal id are both required");
+    return;
+  }
+  try {
+    const optionsRes = await fetch("/v1/passkeys/register/options", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key },
+      body: JSON.stringify({ principal_id: principalId })
+    });
+    if (!optionsRes.ok) {
+      log("options request failed: HTTP " + optionsRes.status);
+      return;
+    }
+    const options = await optionsRes.json();
+
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: bytesFromB64url(options.challenge),
+        rp: { id: options.rp_id, name: "MandatePay" },
+        user: {
+          id: bytesFromB64url(options.user_id),
+          name: principalId,
+          displayName: principalId
+        },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
+        attestation: "none"
+      }
+    });
+
+    const publicKey = credential.response.getPublicKey();
+    if (!publicKey) {
+      log("browser did not expose a public key (getPublicKey returned null)");
+      return;
+    }
+
+    const input = {
+      principal_id: principalId,
+      credential_id: b64url(new Uint8Array(credential.rawId)),
+      client_data_json: b64url(new Uint8Array(credential.response.clientDataJSON)),
+      authenticator_data: b64url(new Uint8Array(credential.response.getAuthenticatorData())),
+      public_key_spki: b64url(new Uint8Array(publicKey))
+    };
+    const registerRes = await fetch("/v1/passkeys/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key },
+      body: JSON.stringify({ challenge_id: options.challenge_id, input })
+    });
+    const text = await registerRes.text();
+    log("HTTP " + registerRes.status + "\n" + text);
+  } catch (error) {
+    log("registration failed: " + error);
+  }
+});
+</script>
+</body>
+</html>
+"#;
+
+/// Public registration page. The page itself holds no secrets: the master key
+/// is typed per registration and never leaves the tab except in the header.
+pub async fn register_page() -> Html<&'static str> {
+    Html(REGISTRATION_PAGE)
+}
+
 // Allow https://*.vercel.app frontend to call this API when deployed separately.
 // Permissive * is intentional for Buildathon demo; tighten to exact origin in prod.
 async fn cors_middleware(req: Request, next: Next) -> impl IntoResponse {
@@ -1003,6 +1265,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(get_agent).patch(update_agent).delete(delete_agent),
         )
         .route("/v1/agents/{id}/rotate", post(rotate_agent_key))
+        .route(
+            "/v1/passkeys/register/options",
+            post(passkey_register_options),
+        )
+        .route("/v1/passkeys/register", post(passkey_register))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
@@ -1011,6 +1278,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Public reads: health + dashboard + ledger/stats for demo. In production, gate /v1/decisions/* and /v1/agents behind read-auth or a redacted view.
     Router::new()
         .route("/", get(dashboard))
+        .route("/register", get(register_page))
         .route("/health", get(health))
         .route("/v1/mandates", post(issue))
         .route("/v1/checkout", post(checkout))

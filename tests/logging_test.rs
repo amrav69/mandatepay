@@ -25,6 +25,8 @@ async fn app_boots_with_rust_log_info() {
         gateway: Gateway::Mock,
         api_key,
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     let _app = build_router(state);
     drop(_app);
@@ -50,6 +52,8 @@ async fn metrics_endpoint_returns_counters() {
         gateway: Gateway::Mock,
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     let app = build_router(state);
     let resp = app

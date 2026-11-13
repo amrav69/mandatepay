@@ -32,6 +32,8 @@ async fn fresh_clone_no_env_still_builds_and_tests() {
         gateway,
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     let app = build_router(state);
 
@@ -115,6 +117,8 @@ async fn fresh_clone_chain_verify_without_env() {
         gateway: Gateway::Mock,
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     let app = build_router(state);
     let resp = app

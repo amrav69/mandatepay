@@ -29,6 +29,8 @@ fn failing_app(mode: FailureMode) -> (axum::Router, Arc<AppState>, String) {
         gateway: Gateway::failing_for_tests(mode),
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     (build_router(state.clone()), state, api_key)
 }

@@ -26,6 +26,8 @@ pub fn test_app() -> (axum::Router, String) {
         gateway,
         api_key: api_key.clone(),
         max_mandate_cap: 100_000,
+        rp_id: "localhost".to_string(),
+        origin: "http://localhost:8080".to_string(),
     });
     (build_router(state), api_key)
 }

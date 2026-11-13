@@ -1,8 +1,9 @@
 use crate::mandates::unix_now;
+use mandate_core::PasskeyPrincipal;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DecisionRow {
@@ -64,7 +65,10 @@ pub struct VelocityOutcome {
     pub window_start: u64,
 }
 
-pub struct Db(Mutex<Connection>);
+/// The SQLite store. Cloning shares one connection behind a mutex, so a test
+/// can seed rows directly while the router serves the same database.
+#[derive(Clone)]
+pub struct Db(Arc<Mutex<Connection>>);
 
 // M4: helpers for safe i64 -> u32/u64 conversion with explicit bounds check (no silent wrap)
 fn checked_u32(v: i64, col: usize, field: &str) -> rusqlite::Result<u32> {
@@ -163,6 +167,21 @@ CREATE TABLE IF NOT EXISTS agent_velocity (
     window_start INTEGER NOT NULL,
     count INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (agent_id, window_start)
+);
+CREATE TABLE IF NOT EXISTS passkeys (
+    principal_id TEXT NOT NULL,
+    credential_id TEXT PRIMARY KEY,
+    public_key_spki BLOB NOT NULL,
+    rp_id TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS challenges (
+    id TEXT PRIMARY KEY,
+    challenge BLOB NOT NULL,
+    purpose TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -294,7 +313,7 @@ impl Db {
         if version < 2 {
             conn.execute_batch("PRAGMA user_version = 2")?;
         }
-        Ok(Db(Mutex::new(conn)))
+        Ok(Db(Arc::new(Mutex::new(conn))))
     }
 
     pub fn record_decision(
@@ -373,10 +392,11 @@ impl Db {
         Ok(changed > 0)
     }
 
-    /// Delete expired nonces and stale velocity windows. Returns
-    /// `(nonces_deleted, velocity_rows_deleted)`. Never touches `decisions`
-    /// (hash chain) or `orders` (idempotency). Short synchronous DELETEs; the
-    /// mutex is released before returning so callers never hold it across `.await`.
+    /// Delete expired nonces, stale velocity windows and spent registration
+    /// challenges. Returns `(nonces_deleted, velocity_rows_deleted)`. Never
+    /// touches `decisions` (hash chain) or `orders` (idempotency). Short
+    /// synchronous DELETEs; the mutex is released before returning so callers
+    /// never hold it across `.await`.
     pub fn prune_expired(&self) -> rusqlite::Result<(usize, usize)> {
         self.prune_expired_at(unix_now())
     }
@@ -393,6 +413,12 @@ impl Db {
         let velocity_deleted = conn.execute(
             "DELETE FROM agent_velocity WHERE window_start < ?1",
             params![velocity_cutoff],
+        )?;
+        // Challenges are single-use rows; once spent or expired they are
+        // garbage. Their count is deliberately not in the returned tuple.
+        conn.execute(
+            "DELETE FROM challenges WHERE expires_at < ?1 OR used = 1",
+            params![checked_i64(now, "now")?],
         )?;
         Ok((nonces_deleted, velocity_deleted))
     }
@@ -1096,5 +1122,117 @@ impl Db {
             let rows = stmt.query_map(params![limit, offset], map_row)?;
             rows.collect()
         }
+    }
+
+    /// Create a single-use registration challenge: 32 random bytes plus a hex
+    /// id derived from the same entropy. Returns `(id, challenge)`. The row
+    /// expires after `ttl_secs` and is consumed by [`Db::take_challenge`].
+    pub fn create_challenge(
+        &self,
+        purpose: &str,
+        ttl_secs: u64,
+    ) -> rusqlite::Result<(String, [u8; 32])> {
+        let mut raw = [0u8; 48];
+        getrandom::fill(&mut raw).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("os randomness unavailable".into())
+        })?;
+        let (challenge_bytes, id_seed) = raw.split_at(32);
+        let id = hex::encode(id_seed);
+        let expires_at = unix_now().checked_add(ttl_secs).ok_or_else(|| {
+            rusqlite::Error::InvalidParameterName("ttl overflows the clock".into())
+        })?;
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO challenges (id, challenge, purpose, expires_at, used) VALUES (?1, ?2, ?3, ?4, 0)",
+            params![id, challenge_bytes, purpose, checked_i64(expires_at, "expires_at")?],
+        )?;
+        let challenge: [u8; 32] = challenge_bytes
+            .try_into()
+            .map_err(|_| rusqlite::Error::InvalidParameterName("challenge length".into()))?;
+        Ok((id, challenge))
+    }
+
+    /// Consume a challenge in ONE statement: the row is marked used and its
+    /// bytes returned only when the id is known, the row is fresh, unexpired
+    /// and was created for `purpose`. Every other outcome is `None`, so reuse,
+    /// expiry and purpose mismatch all fail closed.
+    pub fn take_challenge(&self, id: &str, purpose: &str, now: u64) -> Option<[u8; 32]> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "UPDATE challenges SET used=1 WHERE id=?1 AND used=0 AND expires_at>?2 AND purpose=?3 RETURNING challenge",
+            )
+            .ok()?;
+        let now_i64 = checked_i64(now, "now").ok()?;
+        let mut rows = stmt.query(params![id, now_i64, purpose]).ok()?;
+        let challenge: Vec<u8> = match rows.next() {
+            Ok(Some(row)) => row.get(0).ok()?,
+            _ => return None,
+        };
+        <[u8; 32]>::try_from(challenge.as_slice()).ok()
+    }
+
+    /// Store a verified passkey. Returns `false` when the credential id is
+    /// already registered, `true` (with the row inserted) otherwise.
+    pub fn insert_passkey(&self, passkey: &PasskeyPrincipal) -> rusqlite::Result<bool> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO passkeys (principal_id, credential_id, public_key_spki, rp_id, origin, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                passkey.principal_id,
+                passkey.credential_id,
+                passkey.public_key_spki.as_slice(),
+                passkey.rp_id,
+                passkey.origin,
+                checked_i64(unix_now(), "created_at")?
+            ],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Load a registered passkey by credential id (base64url, no padding).
+    pub fn get_passkey(&self, credential_id: &str) -> rusqlite::Result<Option<PasskeyPrincipal>> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT principal_id, credential_id, public_key_spki, rp_id, origin FROM passkeys WHERE credential_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![credential_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(PasskeyPrincipal {
+                principal_id: row.get(0)?,
+                credential_id: row.get(1)?,
+                public_key_spki: row.get(2)?,
+                rp_id: row.get(3)?,
+                origin: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Test hook: seed a challenge row directly, bypassing
+    /// [`Db::create_challenge`], so tests can inject expired or wrong-purpose
+    /// challenges. Not part of the server API; hidden from generated docs.
+    #[doc(hidden)]
+    pub fn insert_challenge_row(
+        &self,
+        id: &str,
+        challenge: &[u8; 32],
+        purpose: &str,
+        expires_at: u64,
+        used: bool,
+    ) -> rusqlite::Result<()> {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO challenges (id, challenge, purpose, expires_at, used) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id,
+                challenge.as_slice(),
+                purpose,
+                checked_i64(expires_at, "expires_at")?,
+                i64::from(used)
+            ],
+        )?;
+        Ok(())
     }
 }
